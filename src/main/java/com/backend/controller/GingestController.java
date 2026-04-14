@@ -1,5 +1,6 @@
 package com.backend.controller;
 
+import com.backend.dto.FacadeInfo;
 import com.backend.dto.GingestResponse;
 import com.backend.service.GitLabService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -85,5 +86,13 @@ public class GingestController {
     @GetMapping("/projects")
     public List<String> getProjects() {
         return gitLabService.getAllAccessibleProjects();
+    }
+
+    // 请将这段代码加到你的 GingestController.java 里
+    @GetMapping("/facades")
+    public List<FacadeInfo> getFacades(
+            @RequestParam String projectId,
+            @RequestParam(required = false) String branch) {
+        return gitLabService.extractFacadeMethods(projectId, branch);
     }
 }

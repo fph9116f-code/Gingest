@@ -14,12 +14,32 @@ interface GingestResponse {
   content: string
 }
 
+// 定义 Facade 后端返回结构
+interface FacadeInfo {
+  className: string
+  path: string
+  methods: string[]
+}
+
+// 定义 el-tree 需要的节点结构
+interface TreeNode {
+  label: string
+  children?: TreeNode[]
+}
+
 // --- 2. 响应式状态 ---
 const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
-// 新增：项目列表相关的状态
+// Facade 树状图数据
+const facadeTreeData = ref<TreeNode[]>([])
+const treeProps = {
+  children: 'children',
+  label: 'label',
+}
+
+// 项目列表相关的状态
 const projectList = ref<string[]>([])
 const loadingProjects = ref<boolean>(false)
 
@@ -28,9 +48,8 @@ const branchList = ref<string[]>([])
 const selectedBranch = ref<string>('')
 const loadingBranches = ref<boolean>(false)
 
-// --- 新增方法：获取用户有权限的所有项目列表 ---
+// --- 方法：获取用户有权限的所有项目列表 ---
 const handleFetchProjects = async (visible: boolean) => {
-  // 只有当下拉框展开，并且列表为空时才去请求，避免每次点击都发请求
   if (visible && projectList.value.length === 0) {
     loadingProjects.value = true
     try {
@@ -80,7 +99,7 @@ const handleFetchBranches = async () => {
   }
 }
 
-// --- 核心方法：调用后端提取代码 ---
+// --- 核心方法：并发拉取代码和 Facade 树 ---
 const handleIngest = async () => {
   if (!searchInput.value) {
     ElMessage.warning('请选择或输入 GitLab 项目')
@@ -92,16 +111,33 @@ const handleIngest = async () => {
   }
 
   loading.value = true
-  try {
-    const response = await axios.get<GingestResponse>('/api/ingest', {
-      params: {
-        projectId: searchInput.value,
-        branch: selectedBranch.value
-      }
-    })
+  facadeTreeData.value = [] // 每次提取前清空旧的 Facade 数据
 
-    resultData.value = response.data
-    ElMessage.success(`提取成功！共包含 ${response.data.fileCount} 个文件`)
+  try {
+    // 【核心改造】：使用 Promise.all 并发请求两个接口，节约等待时间
+    const [ingestRes, facadeRes] = await Promise.all([
+      axios.get<GingestResponse>('/api/ingest', {
+        params: { projectId: searchInput.value, branch: selectedBranch.value }
+      }),
+      // 这里调用我们刚才新加的 facades 接口，并加了 catch 防止它失败导致整个流程中断
+      axios.get<FacadeInfo[]>('/api/facades', {
+        params: { projectId: searchInput.value, branch: selectedBranch.value }
+      }).catch(err => {
+        console.warn('获取 Facade 接口数据失败', err);
+        return { data: [] };
+      })
+    ])
+
+    // 处理代码提取结果
+    resultData.value = ingestRes.data
+
+    // 【组装树形数据】：将后端返回的 FacadeInfo 转换为 el-tree 需要的格式
+    facadeTreeData.value = facadeRes.data.map(item => ({
+      label: item.className,
+      children: item.methods.map(method => ({ label: method }))
+    }))
+
+    ElMessage.success(`提取成功！共包含 ${ingestRes.data.fileCount} 个文件`)
   } catch (error) {
     console.error(error)
     ElMessage.error('提取失败，请检查项目权限或后端服务状态')
@@ -188,18 +224,19 @@ const handleCopy = async () => {
       <el-main class="main-content" v-loading="loading" element-loading-text="正在狂奔向 GitLab 拉取代码...">
 
         <div class="top-section" v-if="resultData">
-          <el-row :gutter="20" style="height: 100%;">
-            <el-col :span="8">
+          <el-row :gutter="15" style="height: 100%;">
+
+            <el-col :span="5">
               <div class="panel-title">项目摘要 (Summary)</div>
-              <el-card shadow="never" class="summary-card">
-                <p><strong>项目:</strong> {{ resultData.projectName }}</p>
+              <el-card shadow="never" class="panel-card">
+                <p><strong>项目:</strong><br/> <span class="summary-text">{{ resultData.projectName }}</span></p>
                 <p><strong>文件数:</strong> {{ resultData.fileCount }} files</p>
-                <p><strong>预估 Tokens:</strong> {{ resultData.estimatedTokens }}</p>
-                <p><strong>文本大小:</strong> {{ resultData.formattedSize }}</p>
+                <p><strong>Tokens:</strong> {{ resultData.estimatedTokens }}</p>
+                <p><strong>大小:</strong> {{ resultData.formattedSize }}</p>
               </el-card>
             </el-col>
 
-            <el-col :span="16">
+            <el-col :span="10">
               <div class="panel-title">目录结构 (Tree)</div>
               <el-input
                 type="textarea"
@@ -208,6 +245,19 @@ const handleCopy = async () => {
                 class="code-font tree-textarea"
               />
             </el-col>
+
+            <el-col :span="9">
+              <div class="panel-title">Facade 接口 (Interfaces)</div>
+              <el-card shadow="never" class="panel-card facade-card">
+                <el-tree
+                  :data="facadeTreeData"
+                  :props="treeProps"
+                  empty-text="未扫描到 Facade 接口数据"
+                  class="facade-tree"
+                />
+              </el-card>
+            </el-col>
+
           </el-row>
         </div>
 
@@ -271,7 +321,6 @@ const handleCopy = async () => {
   gap: 12px;
 }
 
-/* 调整后的项目选择框宽度 */
 .project-select {
   width: 400px;
 }
@@ -299,15 +348,34 @@ const handleCopy = async () => {
   flex: 0 0 240px;
 }
 
-.summary-card {
+/* 统一卡片样式，适配高度 */
+.panel-card {
   height: calc(100% - 30px);
   box-sizing: border-box;
 }
 
-.summary-card p {
-  margin: 8px 0;
-  font-size: 14px;
+/* Facade 树状图允许内部滚动 */
+.facade-card :deep(.el-card__body) {
+  padding: 10px;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.facade-tree {
+  font-family: 'Consolas', 'Courier New', Courier, monospace;
+  font-size: 13px;
+}
+
+.panel-card p {
+  margin: 5px 0;
+  font-size: 13px;
   color: #606266;
+}
+
+.summary-text {
+  word-break: break-all;
+  color: #409EFF;
 }
 
 .tree-textarea :deep(.el-textarea__inner) {

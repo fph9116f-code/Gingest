@@ -1,5 +1,6 @@
 package com.backend.service;
 
+import com.backend.dto.FacadeInfo;
 import com.backend.dto.GingestResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -13,6 +14,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -314,6 +317,75 @@ public class GitLabService {
         } catch (Exception e) {
             log.error("获取项目列表失败", e);
             throw new RuntimeException("获取项目列表失败: " + e.getMessage());
+        }
+    }
+
+
+    /**
+     * 提取项目中 facade 包下的所有类名及方法名
+     */
+    public List<FacadeInfo> extractFacadeMethods(String input, String branch) {
+        String projectIdOrPath = parseProjectIdentifier(input);
+        Long actualProjectId = resolveProjectId(projectIdOrPath);
+        String targetBranch = (branch == null || branch.trim().isEmpty()) ? null : branch.trim();
+
+        log.info("开始提取 Facade 接口, 项目 ID: {}, 分支: {}", actualProjectId, targetBranch);
+
+        List<FacadeInfo> facadeList = new ArrayList<>();
+
+        // 用于匹配 Java 方法签名的正则表达式 (提取 groups(1) 为方法名)
+        // 匹配规则: (修饰符) (返回类型) 方法名(参数) (throws) { 或 ;
+        Pattern methodPattern = Pattern.compile(
+                "(?:public|protected|private)?\\s*(?:abstract\\s+)?(?:static\\s+)?(?:final\\s+)?[\\w<>,.?\\[\\]\\s]+\\s+(\\w+)\\s*\\([^)]*\\)\\s*(?:throws\\s+[\\w,\\s]+)?(?:\\{|;)"
+        );
+
+        try {
+            InputStream archiveStream = gitLabApi.getRepositoryApi()
+                    .getRepositoryArchive(actualProjectId, targetBranch, org.gitlab4j.api.Constants.ArchiveFormat.ZIP);
+
+            try (ZipInputStream zipIn = new ZipInputStream(archiveStream)) {
+                ZipEntry entry;
+                while ((entry = zipIn.getNextEntry()) != null) {
+                    String fileName = entry.getName();
+
+                    // 过滤条件：1. 是文件 2. 以 .java 结尾 3. 路径中包含 /facade/ 目录
+                    if (!entry.isDirectory() && fileName.endsWith(".java") && fileName.toLowerCase().contains("/facade/")) {
+                        String cleanPath = cleanRootPath(fileName);
+                        String fileContent = new String(zipIn.readAllBytes(), StandardCharsets.UTF_8);
+
+                        // 提取类名
+                        String className = fileName.substring(fileName.lastIndexOf("/") + 1, fileName.lastIndexOf("."));
+                        List<String> methods = new ArrayList<>();
+
+                        // 使用正则匹配提取方法名
+                        Matcher matcher = methodPattern.matcher(fileContent);
+                        while (matcher.find()) {
+                            String methodName = matcher.group(1).trim();
+                            // 过滤掉构造方法和 Java 关键字误判
+                            if (!methodName.equals(className) && !methodName.equals("return") && !methodName.equals("new")) {
+                                if (!methods.contains(methodName)) {
+                                    methods.add(methodName);
+                                }
+                            }
+                        }
+
+                        // 如果这个类里面有方法，就加到结果树里
+                        if (!methods.isEmpty()) {
+                            facadeList.add(FacadeInfo.builder()
+                                    .className(className)
+                                    .path(cleanPath)
+                                    .methods(methods)
+                                    .build());
+                        }
+                    }
+                    zipIn.closeEntry();
+                }
+            }
+            return facadeList;
+
+        } catch (Exception e) {
+            log.error("提取 Facade 方法异常", e);
+            throw new RuntimeException("提取 Facade 方法失败: " + e.getMessage());
         }
     }
 }
