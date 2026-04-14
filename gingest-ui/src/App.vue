@@ -68,7 +68,7 @@ const handleCopy = async () => {
         <div class="search-bar">
           <el-input
             v-model="searchInput"
-            placeholder="输入 GitLab 项目地址或 ID (例如: zysoft/project)"
+            placeholder="输入 GitLab 项目地址或 ID (例如: http://192.168.4.166/sky/biz/service/zoe-outp-order-service)"
             clearable
             @keyup.enter="handleIngest"
           >
