@@ -100,14 +100,44 @@ public class GitLabService {
 
     // 辅助方法：生成简单的缩进目录树
     private String buildDirectoryTree(List<String> paths) {
-        Collections.sort(paths); // 排序让目录结构规整
+        if (paths == null || paths.isEmpty()) {
+            return "暂无有效文件\n";
+        }
+
+        // 排序是树形结构规整的基础
+        Collections.sort(paths);
         StringBuilder tree = new StringBuilder();
+
+        // 用于记录上一个处理过的文件路径拆分结果
+        String[] lastParts = new String[0];
+
         for (String path : paths) {
-            // 根据斜杠数量决定缩进层级
-            int depth = path.length() - path.replace("/", "").length();
-            String indent = "  ".repeat(depth);
-            String fileName = path.substring(path.lastIndexOf("/") + 1);
-            tree.append(indent).append("├── ").append(fileName).append("\n");
+            // 将路径按斜杠拆分成节点数组 (例如: ["src", "main", "java", "App.java"])
+            String[] parts = path.split("/");
+            int commonDepth = 0;
+
+            // 1. 找到当前路径与上一个路径的“公共前缀层级”
+            while (commonDepth < parts.length && commonDepth < lastParts.length
+                    && parts[commonDepth].equals(lastParts[commonDepth])) {
+                commonDepth++;
+            }
+
+            // 2. 从分叉点开始，依次输出新的文件夹或文件
+            for (int i = commonDepth; i < parts.length; i++) {
+                // 每深入一层，增加 4 个空格的缩进
+                String indent = "    ".repeat(i);
+
+                // 判断是目录还是最终的文件
+                if (i == parts.length - 1) {
+                    // 最后一个元素是文件
+                    tree.append(indent).append("├── ").append(parts[i]).append("\n");
+                } else {
+                    // 中间的元素是文件夹，加上后缀斜杠以示区别
+                    tree.append(indent).append("├── ").append(parts[i]).append("/\n");
+                }
+            }
+            // 3. 更新记忆，用于下一次比对
+            lastParts = parts;
         }
         return tree.toString();
     }
@@ -147,23 +177,19 @@ public class GitLabService {
      */
     public List<String> getBranches(String input) {
         String projectIdOrPath = parseProjectIdentifier(input);
-        log.info("开始获取仓库分支列表: {}", projectIdOrPath);
+
+        // 【核心修改】将路径转换为万无一失的数字 ID
+        Long actualProjectId = resolveProjectId(projectIdOrPath);
+        log.info("获取仓库分支列表, 真实项目 ID: {}", actualProjectId);
 
         try {
-            // 【防弹改造】如果输入的是路径，显式进行 URL 编码
-            Object identifier = projectIdOrPath;
-            if (!projectIdOrPath.matches("\\d+")) {
-                // 将 a/b/c 编码为 a%2Fb%2Fc
-                identifier = URLEncoder.encode(projectIdOrPath, StandardCharsets.UTF_8);
-            }
-
-            // 调用 GitLab4J API (注意这里传入的是处理过的 identifier)
-            return gitLabApi.getRepositoryApi().getBranches(identifier).stream()
+            // 调用 GitLab4J API (这里传入的 identifier 变成了 Long 类型的 actualProjectId)
+            return gitLabApi.getRepositoryApi().getBranches(actualProjectId).stream()
                     .map(org.gitlab4j.api.models.Branch::getName)
                     .collect(java.util.stream.Collectors.toList());
         } catch (Exception e) {
             log.error("获取分支列表失败", e);
-            throw new RuntimeException("获取分支列表失败，请检查权限或地址: " + e.getMessage());
+            throw new RuntimeException("获取分支列表失败: " + e.getMessage());
         }
     }
 
@@ -209,5 +235,31 @@ public class GitLabService {
 
         // 5. 如果都不是，假设用户输入的是形如 "zysoft/medical-order" 的直接路径
         return input;
+    }
+
+    /**
+     * 将解析出的路径或字符串，安全地转换为绝对正确的纯数字 Project ID
+     */
+    private Long resolveProjectId(String projectIdOrPath) {
+        // 1. 如果已经是纯数字，直接转成长整型返回
+        if (projectIdOrPath.matches("\\d+")) {
+            return Long.parseLong(projectIdOrPath);
+        }
+
+        log.info("尝试将项目路径转换为真实数字 ID: {}", projectIdOrPath);
+        try {
+            // 2. 调用 ProjectApi 获取项目详情，抽取最底层的数字 ID
+            return gitLabApi.getProjectApi().getProject(projectIdOrPath).getId();
+        } catch (Exception e) {
+            log.warn("直接使用路径查询项目失败，尝试 URL 编码后再次查询...");
+            try {
+                // 3. 终极兜底：对深层路径进行严格的 URL 编码 (将 a/b 转为 a%2Fb)
+                String encodedPath = URLEncoder.encode(projectIdOrPath, StandardCharsets.UTF_8);
+                return gitLabApi.getProjectApi().getProject(encodedPath).getId();
+            } catch (Exception ex) {
+                log.error("路径转换 ID 彻底失败: {}", projectIdOrPath, ex);
+                throw new RuntimeException("无法找到该项目，请确认地址拼写正确，且配置的 Token 具有该项目的访问权限！");
+            }
+        }
     }
 }
