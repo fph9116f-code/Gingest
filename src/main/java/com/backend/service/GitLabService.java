@@ -333,11 +333,13 @@ public class GitLabService {
 
         List<FacadeInfo> facadeList = new ArrayList<>();
 
-        // 用于匹配 Java 方法签名的正则表达式 (提取 groups(1) 为方法名)
-        // 匹配规则: (修饰符) (返回类型) 方法名(参数) (throws) { 或 ;
+        // 【终极优化版】正则表达式：精准捕获方法名，无视参数换行、复杂注解和抛出异常
         Pattern methodPattern = Pattern.compile(
-                "(?:public|protected|private)?\\s*(?:abstract\\s+)?(?:static\\s+)?(?:final\\s+)?[\\w<>,.?\\[\\]\\s]+\\s+(\\w+)\\s*\\([^)]*\\)\\s*(?:throws\\s+[\\w,\\s]+)?(?:\\{|;)"
+                "(?:public\\s+|protected\\s+|private\\s+)?(?:static\\s+|final\\s+|abstract\\s+|default\\s+)*(?!class\\b|interface\\b|enum\\b|@interface\\b)(?:[\\w<>\\[\\]?.,]+\\s+)+(\\w+)\\s*\\("
         );
+
+        // 需要排除的 Java 关键字（防止误捕获代码块里的原生语句）
+        Set<String> ignoreWords = Set.of("new", "return", "throw", "if", "else", "for", "while", "catch", "switch", "try", "super", "this");
 
         try {
             InputStream archiveStream = gitLabApi.getRepositoryApi()
@@ -347,9 +349,10 @@ public class GitLabService {
                 ZipEntry entry;
                 while ((entry = zipIn.getNextEntry()) != null) {
                     String fileName = entry.getName();
+                    String lowerName = fileName.toLowerCase();
 
-                    // 过滤条件：1. 是文件 2. 以 .java 结尾 3. 路径中包含 /facade/ 目录
-                    if (!entry.isDirectory() && fileName.endsWith(".java") && fileName.toLowerCase().contains("/facade/")) {
+                    // 过滤条件：1.是文件 2.结尾是.java 3.路径中包含 facade 文件夹（兼容任何层级，即使在根目录）
+                    if (!entry.isDirectory() && lowerName.endsWith(".java") && lowerName.matches(".*(?:^|/)facade/.*")) {
                         String cleanPath = cleanRootPath(fileName);
                         String fileContent = new String(zipIn.readAllBytes(), StandardCharsets.UTF_8);
 
@@ -361,15 +364,15 @@ public class GitLabService {
                         Matcher matcher = methodPattern.matcher(fileContent);
                         while (matcher.find()) {
                             String methodName = matcher.group(1).trim();
-                            // 过滤掉构造方法和 Java 关键字误判
-                            if (!methodName.equals(className) && !methodName.equals("return") && !methodName.equals("new")) {
+                            // 过滤掉与类名相同的构造方法，以及 Java 原生关键字
+                            if (!methodName.equals(className) && !ignoreWords.contains(methodName)) {
                                 if (!methods.contains(methodName)) {
                                     methods.add(methodName);
                                 }
                             }
                         }
 
-                        // 如果这个类里面有方法，就加到结果树里
+                        // 如果这个类里面有扫出方法，就加到结果树里
                         if (!methods.isEmpty()) {
                             facadeList.add(FacadeInfo.builder()
                                     .className(className)
