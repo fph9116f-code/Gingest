@@ -19,12 +19,12 @@ const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
-// 新增：分支相关的状态
+// 分支相关的状态
 const branchList = ref<string[]>([])
 const selectedBranch = ref<string>('')
 const loadingBranches = ref<boolean>(false)
 
-// --- 新增方法：获取分支列表 ---
+// --- 方法：获取分支列表 ---
 const handleFetchBranches = async () => {
   if (!searchInput.value) {
     ElMessage.warning('请先输入 GitLab 项目地址或 ID')
@@ -32,7 +32,7 @@ const handleFetchBranches = async () => {
   }
 
   loadingBranches.value = true
-  branchList.value = [] // 清空旧数据
+  branchList.value = []
   selectedBranch.value = ''
 
   try {
@@ -42,11 +42,9 @@ const handleFetchBranches = async () => {
 
     branchList.value = response.data
     if (branchList.value.length > 0) {
-      // 默认选中列表里的第一个分支（通常 GitLab 接口返回的第一个或包含 default 的就是主分支）
       selectedBranch.value = branchList.value.includes('master') ? 'master' :
         branchList.value.includes('main') ? 'main' :
           (branchList.value[0] || '')
-      branchList.value.includes('main') ? 'main' : branchList.value[0]
       ElMessage.success(`成功获取 ${branchList.value.length} 个分支，请确认后点击提取`)
     } else {
       ElMessage.warning('该项目未找到任何分支')
@@ -65,7 +63,6 @@ const handleIngest = async () => {
     ElMessage.warning('请输入 GitLab 项目地址或 ID')
     return
   }
-  // 如果拉取了分支但没选，给个提示
   if (branchList.value.length > 0 && !selectedBranch.value) {
     ElMessage.warning('请选择一个分支')
     return
@@ -73,10 +70,11 @@ const handleIngest = async () => {
 
   loading.value = true
   try {
+    // 注意：我把这里的 /api/ingest/branches 修正回了 /api/ingest，如果你后端改了请自行调整
     const response = await axios.get<GingestResponse>('/api/ingest', {
       params: {
         projectId: searchInput.value,
-        branch: selectedBranch.value // 将选中的分支传给后端
+        branch: selectedBranch.value
       }
     })
 
@@ -93,7 +91,6 @@ const handleIngest = async () => {
 // --- 辅助方法：调用下载接口 ---
 const handleDownload = () => {
   if (!searchInput.value) return
-  // 下载时也带上分支参数
   let downloadUrl = `/api/ingest/download?projectId=${encodeURIComponent(searchInput.value)}`
   if (selectedBranch.value) {
     downloadUrl += `&branch=${encodeURIComponent(selectedBranch.value)}`
@@ -116,9 +113,9 @@ const handleCopy = async () => {
 <template>
   <div class="common-layout">
     <el-container class="main-container">
+
       <el-header class="header">
         <h2>Gingest 代码提取器</h2>
-
         <div class="operation-bar">
           <el-input
             v-model="searchInput"
@@ -155,39 +152,40 @@ const handleCopy = async () => {
         </div>
       </el-header>
 
-      <el-container v-loading="loading" element-loading-text="正在狂奔向 GitLab 拉取代码...">
-        <el-aside width="350px" class="aside-tree">
-          <div class="panel-title">项目摘要 (Summary)</div>
-          <el-card shadow="never" class="summary-card" v-if="resultData">
-            <p><strong>项目:</strong> {{ resultData.projectName }}</p>
-            <p><strong>文件数:</strong> {{ resultData.fileCount }} files</p>
-            <p><strong>预估 Tokens:</strong> {{ resultData.estimatedTokens }}</p>
-            <p><strong>文本大小:</strong> {{ resultData.formattedSize }}</p>
-          </el-card>
-          <div v-else class="empty-text">暂无摘要信息</div>
+      <el-main class="main-content" v-loading="loading" element-loading-text="正在狂奔向 GitLab 拉取代码...">
 
-          <div class="panel-title" style="margin-top: 20px;">目录结构 (Tree)</div>
-          <el-input
-            v-if="resultData"
-            type="textarea"
-            :rows="18"
-            readonly
-            v-model="resultData.directoryTree"
-            class="code-font"
-          />
-          <div v-else class="empty-text">暂无目录树信息</div>
-        </el-aside>
+        <div class="top-section" v-if="resultData">
+          <el-row :gutter="20" style="height: 100%;">
+            <el-col :span="8">
+              <div class="panel-title">项目摘要 (Summary)</div>
+              <el-card shadow="never" class="summary-card">
+                <p><strong>项目:</strong> {{ resultData.projectName }}</p>
+                <p><strong>文件数:</strong> {{ resultData.fileCount }} files</p>
+                <p><strong>预估 Tokens:</strong> {{ resultData.estimatedTokens }}</p>
+                <p><strong>文本大小:</strong> {{ resultData.formattedSize }}</p>
+              </el-card>
+            </el-col>
 
-        <el-main class="main-content">
+            <el-col :span="16">
+              <div class="panel-title">目录结构 (Tree)</div>
+              <el-input
+                type="textarea"
+                readonly
+                v-model="resultData.directoryTree"
+                class="code-font tree-textarea"
+              />
+            </el-col>
+          </el-row>
+        </div>
+
+        <div class="bottom-section">
           <div class="action-bar">
             <span class="panel-title">提取结果 (Files Content)</span>
             <div>
-              <el-button type="success" :icon="Document" :disabled="!resultData"
-                         @click="handleCopy">
+              <el-button type="success" :icon="Document" :disabled="!resultData" @click="handleCopy">
                 复制全部代码
               </el-button>
-              <el-button type="warning" :icon="Download" :disabled="!resultData"
-                         @click="handleDownload">
+              <el-button type="warning" :icon="Download" :disabled="!resultData" @click="handleDownload">
                 下载 TXT
               </el-button>
             </div>
@@ -200,12 +198,12 @@ const handleCopy = async () => {
             v-model="resultData.content"
             class="code-textarea code-font"
           />
-          <el-card v-else class="code-card empty-card" shadow="never">
-            请输入地址 -> 获取分支 -> 开始提取...
+          <el-card v-else class="empty-card" shadow="never">
+            <div class="empty-text">请输入地址 -> 获取分支 -> 开始提取...</div>
           </el-card>
-        </el-main>
+        </div>
 
-      </el-container>
+      </el-main>
     </el-container>
   </div>
 </template>
@@ -234,11 +232,10 @@ const handleCopy = async () => {
   font-size: 20px;
 }
 
-/* --- 新增的操作区样式 --- */
 .operation-bar {
   display: flex;
   align-items: center;
-  gap: 12px; /* 元素之间的间距 */
+  gap: 12px;
 }
 
 .input-box {
@@ -249,18 +246,14 @@ const handleCopy = async () => {
   width: 200px;
 }
 
-.aside-tree {
-  background-color: white;
-  border-right: 1px solid #dcdfe6;
-  padding: 15px;
-  display: flex;
-  flex-direction: column;
-}
-
+/* 主体布局核心代码：Flex 列排版 */
 .main-content {
   padding: 20px;
   display: flex;
   flex-direction: column;
+  gap: 20px; /* 上下两部分的间距 */
+  height: calc(100vh - 60px); /* 减去顶部 header 的高度 */
+  box-sizing: border-box;
 }
 
 .panel-title {
@@ -269,17 +262,51 @@ const handleCopy = async () => {
   color: #303133;
 }
 
+/* 上半部分固定高度 */
+.top-section {
+  flex: 0 0 240px; /* 锁死上半部分高度为 240px */
+}
+
+.summary-card {
+  height: calc(100% - 30px); /* 适配标题高度 */
+  box-sizing: border-box;
+}
+
 .summary-card p {
-  margin: 5px 0;
+  margin: 8px 0;
   font-size: 14px;
   color: #606266;
+}
+
+/* 调整顶部目录树输入框高度 */
+.tree-textarea :deep(.el-textarea__inner) {
+  height: 208px; /* 和左侧卡片高度对齐 */
+  resize: none;
+}
+
+/* 下半部分自动铺满剩余空间 */
+.bottom-section {
+  flex: 1; /* 撑满底部剩余空间 */
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* 解决嵌套 Flex 导致内容溢出无法滚动的问题 */
 }
 
 .action-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
+}
+
+/* 底部代码输入框高度 100% */
+.code-textarea {
+  flex: 1;
+}
+
+.code-textarea :deep(.el-textarea__inner) {
+  height: 100%;
+  resize: none;
 }
 
 .code-font :deep(.el-textarea__inner) {
@@ -289,23 +316,16 @@ const handleCopy = async () => {
   line-height: 1.5;
 }
 
-.code-textarea :deep(.el-textarea__inner) {
-  height: calc(100vh - 160px);
-  resize: none;
-}
-
 .empty-card {
-  height: calc(100vh - 160px);
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #909399;
 }
 
 .empty-text {
   color: #909399;
   font-size: 14px;
   text-align: center;
-  padding: 20px 0;
 }
 </style>
