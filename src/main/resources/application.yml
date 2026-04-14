@@ -11,5 +11,4 @@ spring:
 # 自定义 GitLab 配置
 gitlab:
   url: "http://192.168.4.166/"
-  # 填入你刚才生成的 Personal Access Token
   token: "glpat-PYKvrAimR3bCtv3sviXX"
