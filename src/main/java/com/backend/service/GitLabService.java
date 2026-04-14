@@ -10,7 +10,6 @@ import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipEntry;
@@ -98,48 +97,36 @@ public class GitLabService {
         }
     }
 
-    // 辅助方法：生成简单的缩进目录树
+    // 辅助方法：生成层级分明且自动折叠单子节点的目录树
     private String buildDirectoryTree(List<String> paths) {
         if (paths == null || paths.isEmpty()) {
             return "暂无有效文件\n";
         }
 
-        // 排序是树形结构规整的基础
-        Collections.sort(paths);
-        StringBuilder tree = new StringBuilder();
-
-        // 用于记录上一个处理过的文件路径拆分结果
-        String[] lastParts = new String[0];
-
+        // 1. 构建完整的初始树结构
+        TreeNode root = new TreeNode("root");
         for (String path : paths) {
-            // 将路径按斜杠拆分成节点数组 (例如: ["src", "main", "java", "App.java"])
             String[] parts = path.split("/");
-            int commonDepth = 0;
-
-            // 1. 找到当前路径与上一个路径的“公共前缀层级”
-            while (commonDepth < parts.length && commonDepth < lastParts.length
-                    && parts[commonDepth].equals(lastParts[commonDepth])) {
-                commonDepth++;
-            }
-
-            // 2. 从分叉点开始，依次输出新的文件夹或文件
-            for (int i = commonDepth; i < parts.length; i++) {
-                // 每深入一层，增加 4 个空格的缩进
-                String indent = "    ".repeat(i);
-
-                // 判断是目录还是最终的文件
+            TreeNode current = root;
+            for (int i = 0; i < parts.length; i++) {
+                String part = parts[i];
+                current.children.putIfAbsent(part, new TreeNode(part));
+                current = current.children.get(part);
                 if (i == parts.length - 1) {
-                    // 最后一个元素是文件
-                    tree.append(indent).append("├── ").append(parts[i]).append("\n");
-                } else {
-                    // 中间的元素是文件夹，加上后缀斜杠以示区别
-                    tree.append(indent).append("├── ").append(parts[i]).append("/\n");
+                    current.isFile = true;
                 }
             }
-            // 3. 更新记忆，用于下一次比对
-            lastParts = parts;
         }
-        return tree.toString();
+
+        // 2. 核心魔法：递归压缩树结构（把单传代代合并）
+        compressTree(root);
+
+        // 3. 遍历打印树状文本
+        StringBuilder treeStr = new StringBuilder();
+        for (TreeNode child : root.children.values()) {
+            printTree(child, "", treeStr);
+        }
+        return treeStr.toString();
     }
 
     // 辅助方法：去掉 GitLab zip 包自带的第一层带 hash 的长目录名
@@ -260,6 +247,50 @@ public class GitLabService {
                 log.error("路径转换 ID 彻底失败: {}", projectIdOrPath, ex);
                 throw new RuntimeException("无法找到该项目，请确认地址拼写正确，且配置的 Token 具有该项目的访问权限！");
             }
+        }
+    }
+
+    // 内部类：用于构建真实的树状结构
+    private static class TreeNode {
+        String name;
+        // TreeMap 保证文件按字母顺序自动排序
+        java.util.Map<String, TreeNode> children = new java.util.TreeMap<>();
+        boolean isFile;
+
+        TreeNode(String name) {
+            this.name = name;
+        }
+    }
+
+    // 递归压缩逻辑：如果文件夹只有一个孩子，就和孩子合并成一行
+    private void compressTree(TreeNode node) {
+        // 先深入到最底层，把子孙节点压缩好
+        for (TreeNode child : new java.util.ArrayList<>(node.children.values())) {
+            compressTree(child);
+        }
+
+        // 如果当前节点不是根节点，且不是文件，且【只有一个孩子】
+        if (!"root".equals(node.name) && !node.isFile && node.children.size() == 1) {
+            TreeNode singleChild = node.children.values().iterator().next();
+            // 将当前节点与唯一子节点合并 (例如 src + main 变成 src/main)
+            node.name = node.name + "/" + singleChild.name;
+            node.children = singleChild.children;
+            node.isFile = singleChild.isFile; // 如果子节点是文件，合并后当前节点也变成了文件末端
+        }
+    }
+
+    // 递归打印逻辑
+    private void printTree(TreeNode node, String indent, StringBuilder sb) {
+        sb.append(indent).append("├── ").append(node.name);
+        // 如果压缩到最后依然是个目录，加个后缀斜杠区分
+        if (!node.isFile) {
+            sb.append("/");
+        }
+        sb.append("\n");
+
+        String childIndent = indent + "    ";
+        for (TreeNode child : node.children.values()) {
+            printTree(child, childIndent, sb);
         }
     }
 }
