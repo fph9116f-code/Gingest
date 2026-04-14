@@ -81,4 +81,9 @@ public class GingestController {
     public List<String> getBranches(@RequestParam String projectId) {
         return gitLabService.getBranches(projectId);
     }
+
+    @GetMapping("/projects")
+    public List<String> getProjects() {
+        return gitLabService.getAllAccessibleProjects();
+    }
 }

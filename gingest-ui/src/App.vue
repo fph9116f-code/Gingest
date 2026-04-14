@@ -19,15 +19,38 @@ const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
+// 新增：项目列表相关的状态
+const projectList = ref<string[]>([])
+const loadingProjects = ref<boolean>(false)
+
 // 分支相关的状态
 const branchList = ref<string[]>([])
 const selectedBranch = ref<string>('')
 const loadingBranches = ref<boolean>(false)
 
+// --- 新增方法：获取用户有权限的所有项目列表 ---
+const handleFetchProjects = async (visible: boolean) => {
+  // 只有当下拉框展开，并且列表为空时才去请求，避免每次点击都发请求
+  if (visible && projectList.value.length === 0) {
+    loadingProjects.value = true
+    try {
+      const response = await axios.get<string[]>('/api/ingest/projects')
+      projectList.value = response.data
+      if (projectList.value.length === 0) {
+        ElMessage.warning('未获取到任何有权限的项目，请检查 Token 配置')
+      }
+    } catch (error) {
+      console.error(error)
+      ElMessage.error('获取项目列表失败')
+    } finally {
+      loadingProjects.value = false
+    }
+  }
+}
+
 // --- 方法：获取分支列表 ---
 const handleFetchBranches = async () => {
   if (!searchInput.value) {
-    ElMessage.warning('请先输入 GitLab 项目地址或 ID')
     return
   }
 
@@ -45,7 +68,7 @@ const handleFetchBranches = async () => {
       selectedBranch.value = branchList.value.includes('master') ? 'master' :
         branchList.value.includes('main') ? 'main' :
           (branchList.value[0] || '')
-      ElMessage.success(`成功获取 ${branchList.value.length} 个分支，请确认后点击提取`)
+      ElMessage.success(`成功获取分支，已自动选中: ${selectedBranch.value}`)
     } else {
       ElMessage.warning('该项目未找到任何分支')
     }
@@ -60,7 +83,7 @@ const handleFetchBranches = async () => {
 // --- 核心方法：调用后端提取代码 ---
 const handleIngest = async () => {
   if (!searchInput.value) {
-    ElMessage.warning('请输入 GitLab 项目地址或 ID')
+    ElMessage.warning('请选择或输入 GitLab 项目')
     return
   }
   if (branchList.value.length > 0 && !selectedBranch.value) {
@@ -70,7 +93,6 @@ const handleIngest = async () => {
 
   loading.value = true
   try {
-    // 注意：我把这里的 /api/ingest/branches 修正回了 /api/ingest，如果你后端改了请自行调整
     const response = await axios.get<GingestResponse>('/api/ingest', {
       params: {
         projectId: searchInput.value,
@@ -117,19 +139,30 @@ const handleCopy = async () => {
       <el-header class="header">
         <h2>Gingest 代码提取器</h2>
         <div class="operation-bar">
-          <el-input
+
+          <el-select
             v-model="searchInput"
-            placeholder="项目地址 (如: zysoft/medical-order)"
+            placeholder="搜索或选择项目 (支持直接粘贴纯数字ID)"
+            class="project-select"
+            filterable
+            allow-create
+            default-first-option
             clearable
-            class="input-box"
-            @keyup.enter="handleFetchBranches"
+            :loading="loadingProjects"
+            @visible-change="handleFetchProjects"
+            @change="handleFetchBranches"
           >
-            <template #append>
-              <el-button :icon="Connection" :loading="loadingBranches" @click="handleFetchBranches">
-                获取分支
-              </el-button>
-            </template>
-          </el-input>
+            <el-option
+              v-for="proj in projectList"
+              :key="proj"
+              :label="proj"
+              :value="proj"
+            />
+          </el-select>
+
+          <el-button :icon="Connection" :loading="loadingBranches" @click="handleFetchBranches" title="手动刷新分支">
+            获取分支
+          </el-button>
 
           <el-select
             v-model="selectedBranch"
@@ -199,7 +232,7 @@ const handleCopy = async () => {
             class="code-textarea code-font"
           />
           <el-card v-else class="empty-card" shadow="never">
-            <div class="empty-text">请输入地址 -> 获取分支 -> 开始提取...</div>
+            <div class="empty-text">请选择项目 -> 确认分支 -> 开始提取...</div>
           </el-card>
         </div>
 
@@ -238,21 +271,21 @@ const handleCopy = async () => {
   gap: 12px;
 }
 
-.input-box {
-  width: 450px;
+/* 调整后的项目选择框宽度 */
+.project-select {
+  width: 400px;
 }
 
 .branch-select {
-  width: 200px;
+  width: 180px;
 }
 
-/* 主体布局核心代码：Flex 列排版 */
 .main-content {
   padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 20px; /* 上下两部分的间距 */
-  height: calc(100vh - 60px); /* 减去顶部 header 的高度 */
+  gap: 20px;
+  height: calc(100vh - 60px);
   box-sizing: border-box;
 }
 
@@ -262,13 +295,12 @@ const handleCopy = async () => {
   color: #303133;
 }
 
-/* 上半部分固定高度 */
 .top-section {
-  flex: 0 0 240px; /* 锁死上半部分高度为 240px */
+  flex: 0 0 240px;
 }
 
 .summary-card {
-  height: calc(100% - 30px); /* 适配标题高度 */
+  height: calc(100% - 30px);
   box-sizing: border-box;
 }
 
@@ -278,18 +310,16 @@ const handleCopy = async () => {
   color: #606266;
 }
 
-/* 调整顶部目录树输入框高度 */
 .tree-textarea :deep(.el-textarea__inner) {
-  height: 208px; /* 和左侧卡片高度对齐 */
+  height: 208px;
   resize: none;
 }
 
-/* 下半部分自动铺满剩余空间 */
 .bottom-section {
-  flex: 1; /* 撑满底部剩余空间 */
+  flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 0; /* 解决嵌套 Flex 导致内容溢出无法滚动的问题 */
+  min-height: 0;
 }
 
 .action-bar {
@@ -299,7 +329,6 @@ const handleCopy = async () => {
   margin-bottom: 10px;
 }
 
-/* 底部代码输入框高度 100% */
 .code-textarea {
   flex: 1;
 }

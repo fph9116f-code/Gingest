@@ -4,6 +4,7 @@ import com.backend.dto.GingestResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
+import org.gitlab4j.api.models.ProjectFilter;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
@@ -291,6 +292,28 @@ public class GitLabService {
         String childIndent = indent + "    ";
         for (TreeNode child : node.children.values()) {
             printTree(child, childIndent, sb);
+        }
+    }
+
+    /**
+     * 获取当前 Token 拥有访问权限的所有项目列表 (带命名空间路径)
+     */
+    public List<String> getAllAccessibleProjects() {
+        log.info("开始拉取当前 Token 可访问的项目列表...");
+        try {
+            // 【核心防坑】：只拉取当前用户真正加入的、有实际权限的项目
+            ProjectFilter filter = new ProjectFilter().withMembership(true);
+
+            // 调用接口获取项目列表
+            return gitLabApi.getProjectApi().getProjects(filter).stream()
+                    .map(org.gitlab4j.api.models.Project::getPathWithNamespace)
+                    // 如果你想让列表按字母顺序排个序，可以直接在 Java 里加上 .sorted()
+                    .sorted()
+                    .collect(java.util.stream.Collectors.toList());
+
+        } catch (Exception e) {
+            log.error("获取项目列表失败", e);
+            throw new RuntimeException("获取项目列表失败: " + e.getMessage());
         }
     }
 }
