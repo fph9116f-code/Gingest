@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import {ref} from 'vue'
-import {Document, Download, Connection} from '@element-plus/icons-vue'
+import { ref } from 'vue'
+import { Document, Download, Connection } from '@element-plus/icons-vue'
 import axios from 'axios'
-import {ElMessage} from 'element-plus'
+import { ElMessage } from 'element-plus'
 
 // --- 1. 定义后端返回的数据结构接口 ---
 interface GingestResponse {
@@ -14,14 +14,12 @@ interface GingestResponse {
   content: string
 }
 
-// 定义 Facade 后端返回结构
 interface FacadeInfo {
   className: string
   path: string
   methods: string[]
 }
 
-// 定义 el-tree 需要的节点结构
 interface TreeNode {
   label: string
   children?: TreeNode[]
@@ -39,14 +37,40 @@ const treeProps = {
   label: 'label',
 }
 
-// 项目列表相关的状态
 const projectList = ref<string[]>([])
 const loadingProjects = ref<boolean>(false)
 
-// 分支相关的状态
 const branchList = ref<string[]>([])
 const selectedBranch = ref<string>('')
 const loadingBranches = ref<boolean>(false)
+
+// --- 新增：拖拽调整上下比例的状态与逻辑 ---
+const topHeight = ref<number>(280) // 上半部分默认高度 280px
+const isDragging = ref<boolean>(false)
+
+const startDrag = () => {
+  isDragging.value = true
+  document.addEventListener('mousemove', onDrag)
+  document.addEventListener('mouseup', stopDrag)
+  document.body.style.userSelect = 'none' // 防止拖拽时误选中文本
+}
+
+const onDrag = (e: MouseEvent) => {
+  if (!isDragging.value) return
+  // 鼠标Y轴坐标 - 顶部导航栏高度(60px) - 主体内边距(20px)
+  let newHeight = e.clientY - 80
+  // 限制拖拽的最小和最大高度，防止把窗口挤没
+  if (newHeight < 150) newHeight = 150
+  if (newHeight > window.innerHeight - 200) newHeight = window.innerHeight - 200
+  topHeight.value = newHeight
+}
+
+const stopDrag = () => {
+  isDragging.value = false
+  document.removeEventListener('mousemove', onDrag)
+  document.removeEventListener('mouseup', stopDrag)
+  document.body.style.userSelect = '' // 恢复文本选中能力
+}
 
 // --- 方法：获取用户有权限的所有项目列表 ---
 const handleFetchProjects = async (visible: boolean) => {
@@ -69,9 +93,7 @@ const handleFetchProjects = async (visible: boolean) => {
 
 // --- 方法：获取分支列表 ---
 const handleFetchBranches = async () => {
-  if (!searchInput.value) {
-    return
-  }
+  if (!searchInput.value) return
 
   loadingBranches.value = true
   branchList.value = []
@@ -79,7 +101,7 @@ const handleFetchBranches = async () => {
 
   try {
     const response = await axios.get<string[]>('/api/ingest/branches', {
-      params: {projectId: searchInput.value}
+      params: { projectId: searchInput.value }
     })
 
     branchList.value = response.data
@@ -111,15 +133,13 @@ const handleIngest = async () => {
   }
 
   loading.value = true
-  facadeTreeData.value = [] // 每次提取前清空旧的 Facade 数据
+  facadeTreeData.value = []
 
   try {
-    // 【核心改造】：使用 Promise.all 并发请求两个接口，节约等待时间
     const [ingestRes, facadeRes] = await Promise.all([
       axios.get<GingestResponse>('/api/ingest', {
         params: { projectId: searchInput.value, branch: selectedBranch.value }
       }),
-      // 这里调用我们刚才新加的 facades 接口，并加了 catch 防止它失败导致整个流程中断
       axios.get<FacadeInfo[]>('/api/ingest/facades', {
         params: { projectId: searchInput.value, branch: selectedBranch.value }
       }).catch(err => {
@@ -128,10 +148,8 @@ const handleIngest = async () => {
       })
     ])
 
-    // 处理代码提取结果
     resultData.value = ingestRes.data
 
-    // 【组装树形数据】：将后端返回的 FacadeInfo 转换为 el-tree 需要的格式
     facadeTreeData.value = facadeRes.data.map(item => ({
       label: item.className,
       children: item.methods.map(method => ({ label: method }))
@@ -175,7 +193,6 @@ const handleCopy = async () => {
       <el-header class="header">
         <h2>Gingest 代码提取器</h2>
         <div class="operation-bar">
-
           <el-select
             v-model="searchInput"
             placeholder="搜索或选择项目 (支持直接粘贴纯数字ID)"
@@ -188,12 +205,7 @@ const handleCopy = async () => {
             @visible-change="handleFetchProjects"
             @change="handleFetchBranches"
           >
-            <el-option
-              v-for="proj in projectList"
-              :key="proj"
-              :label="proj"
-              :value="proj"
-            />
+            <el-option v-for="proj in projectList" :key="proj" :label="proj" :value="proj" />
           </el-select>
 
           <el-button :icon="Connection" :loading="loadingBranches" @click="handleFetchBranches" title="手动刷新分支">
@@ -207,12 +219,7 @@ const handleCopy = async () => {
             :disabled="branchList.length === 0"
             filterable
           >
-            <el-option
-              v-for="branch in branchList"
-              :key="branch"
-              :label="branch"
-              :value="branch"
-            />
+            <el-option v-for="branch in branchList" :key="branch" :label="branch" :value="branch" />
           </el-select>
 
           <el-button type="primary" :loading="loading" @click="handleIngest">
@@ -223,12 +230,12 @@ const handleCopy = async () => {
 
       <el-main class="main-content" v-loading="loading" element-loading-text="正在狂奔向 GitLab 拉取代码...">
 
-        <div class="top-section" v-if="resultData">
-          <el-row :gutter="15" style="height: 100%;">
+        <div class="top-section" v-if="resultData" :style="{ height: topHeight + 'px' }">
+          <el-row :gutter="15" class="h-100">
 
-            <el-col :span="5">
+            <el-col :span="5" class="h-100">
               <div class="panel-title">项目摘要 (Summary)</div>
-              <el-card shadow="never" class="panel-card">
+              <el-card shadow="never" class="panel-card scrollable-card">
                 <p><strong>项目:</strong><br/> <span class="summary-text">{{ resultData.projectName }}</span></p>
                 <p><strong>文件数:</strong> {{ resultData.fileCount }} files</p>
                 <p><strong>Tokens:</strong> {{ resultData.estimatedTokens }}</p>
@@ -236,19 +243,21 @@ const handleCopy = async () => {
               </el-card>
             </el-col>
 
-            <el-col :span="10">
+            <el-col :span="10" class="h-100">
               <div class="panel-title">目录结构 (Tree)</div>
-              <el-input
-                type="textarea"
-                readonly
-                v-model="resultData.directoryTree"
-                class="code-font tree-textarea"
-              />
+              <div class="textarea-wrapper">
+                <el-input
+                  type="textarea"
+                  readonly
+                  v-model="resultData.directoryTree"
+                  class="code-font tree-textarea"
+                />
+              </div>
             </el-col>
 
-            <el-col :span="9">
+            <el-col :span="9" class="h-100">
               <div class="panel-title">Facade 接口 (Interfaces)</div>
-              <el-card shadow="never" class="panel-card facade-card">
+              <el-card shadow="never" class="panel-card scrollable-card">
                 <el-tree
                   :data="facadeTreeData"
                   :props="treeProps"
@@ -261,26 +270,33 @@ const handleCopy = async () => {
           </el-row>
         </div>
 
-        <div class="bottom-section">
-          <div class="action-bar">
-            <span class="panel-title">提取结果 (Files Content)</span>
-            <div>
-              <el-button type="success" :icon="Document" :disabled="!resultData" @click="handleCopy">
-                复制全部代码
-              </el-button>
-              <el-button type="warning" :icon="Download" :disabled="!resultData" @click="handleDownload">
-                下载 TXT
-              </el-button>
-            </div>
-          </div>
+        <div class="drag-divider" v-if="resultData" @mousedown="startDrag">
+          <div class="drag-line"></div>
+        </div>
 
-          <el-input
-            v-if="resultData"
-            type="textarea"
-            readonly
-            v-model="resultData.content"
-            class="code-textarea code-font"
-          />
+        <div class="bottom-section" :class="{ 'flex-center': !resultData }">
+          <template v-if="resultData">
+            <div class="action-bar">
+              <span class="panel-title">提取结果 (Files Content)</span>
+              <div>
+                <el-button type="success" :icon="Document" @click="handleCopy">
+                  复制全部代码
+                </el-button>
+                <el-button type="warning" :icon="Download" @click="handleDownload">
+                  下载 TXT
+                </el-button>
+              </div>
+            </div>
+            <div class="textarea-wrapper">
+              <el-input
+                type="textarea"
+                readonly
+                v-model="resultData.content"
+                class="code-font bottom-textarea"
+              />
+            </div>
+          </template>
+
           <el-card v-else class="empty-card" shadow="never">
             <div class="empty-text">请选择项目 -> 确认分支 -> 开始提取...</div>
           </el-card>
@@ -329,13 +345,14 @@ const handleCopy = async () => {
   width: 180px;
 }
 
+/* 主体容器需要 overflow:hidden 以防止整个页面被意外撑开 */
 .main-content {
   padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
   height: calc(100vh - 60px);
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .panel-title {
@@ -344,22 +361,28 @@ const handleCopy = async () => {
   color: #303133;
 }
 
+/* --- 顶部区域 --- */
 .top-section {
-  flex: 0 0 240px;
+  flex: none; /* 高度完全由 style 动态控制，不参与弹性伸缩 */
 }
 
-/* 统一卡片样式，适配高度 */
+.h-100 {
+  height: 100%;
+}
+
+/* --- 修复溢出问题的核心：可内滚动的卡片 --- */
 .panel-card {
   height: calc(100% - 30px);
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
 
-/* Facade 树状图允许内部滚动 */
-.facade-card :deep(.el-card__body) {
-  padding: 10px;
-  height: 100%;
-  box-sizing: border-box;
-  overflow-y: auto;
+.scrollable-card :deep(.el-card__body) {
+  flex: 1;
+  overflow-y: auto; /* 子元素过多时，只在卡片内部出滚动条！绝不向外撑破 */
+  padding: 10px 15px;
+  min-height: 0;
 }
 
 .facade-tree {
@@ -378,11 +401,44 @@ const handleCopy = async () => {
   color: #409EFF;
 }
 
+/* --- 动态高度适配的文本域包装器 --- */
+.textarea-wrapper {
+  height: calc(100% - 30px);
+}
+.tree-textarea {
+  height: 100%;
+}
 .tree-textarea :deep(.el-textarea__inner) {
-  height: 208px;
+  height: 100%;
   resize: none;
 }
 
+/* --- 神级拖拽分割线 --- */
+.drag-divider {
+  height: 18px;
+  cursor: row-resize; /* 鼠标悬浮时变成上下拉伸图标 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 2px 0;
+  flex-shrink: 0;
+  transition: background-color 0.2s;
+}
+
+.drag-line {
+  width: 60px;
+  height: 4px;
+  background-color: #dcdfe6;
+  border-radius: 2px;
+  transition: background-color 0.2s;
+}
+
+.drag-divider:hover .drag-line,
+.drag-divider:active .drag-line {
+  background-color: #409EFF; /* 拖拽时变为品牌蓝 */
+}
+
+/* --- 底部区域自动铺满 --- */
 .bottom-section {
   flex: 1;
   display: flex;
@@ -390,18 +446,22 @@ const handleCopy = async () => {
   min-height: 0;
 }
 
+.flex-center {
+  justify-content: center;
+}
+
 .action-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
-.code-textarea {
-  flex: 1;
+.bottom-textarea {
+  height: 100%;
 }
-
-.code-textarea :deep(.el-textarea__inner) {
+.bottom-textarea :deep(.el-textarea__inner) {
   height: 100%;
   resize: none;
 }
