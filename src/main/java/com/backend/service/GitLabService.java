@@ -7,6 +7,7 @@ import org.gitlab4j.api.GitLabApi;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -139,6 +140,33 @@ public class GitLabService {
 
         return true; // 剩下的暂且都当做文本文件处理
     }
+
+
+    /**
+     * 获取指定仓库的所有分支名列表
+     */
+    public List<String> getBranches(String input) {
+        String projectIdOrPath = parseProjectIdentifier(input);
+        log.info("开始获取仓库分支列表: {}", projectIdOrPath);
+
+        try {
+            // 【防弹改造】如果输入的是路径，显式进行 URL 编码
+            Object identifier = projectIdOrPath;
+            if (!projectIdOrPath.matches("\\d+")) {
+                // 将 a/b/c 编码为 a%2Fb%2Fc
+                identifier = URLEncoder.encode(projectIdOrPath, StandardCharsets.UTF_8);
+            }
+
+            // 调用 GitLab4J API (注意这里传入的是处理过的 identifier)
+            return gitLabApi.getRepositoryApi().getBranches(identifier).stream()
+                    .map(org.gitlab4j.api.models.Branch::getName)
+                    .collect(java.util.stream.Collectors.toList());
+        } catch (Exception e) {
+            log.error("获取分支列表失败", e);
+            throw new RuntimeException("获取分支列表失败，请检查权限或地址: " + e.getMessage());
+        }
+    }
+
 
     /**
      * 智能解析输入内容，支持纯数字ID、HTTP地址、SSH地址、命名空间路径

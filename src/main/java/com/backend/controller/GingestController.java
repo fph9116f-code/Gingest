@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 @Tag(name = "代码提取", description = "GitLab 代码拉取相关接口")
 @RestController
@@ -25,7 +26,7 @@ public class GingestController {
     private final GitLabService gitLabService;
 
     @Operation(summary = "提取指定项目的代码并转为Markdown文本")
-    @GetMapping("/api/ingest")
+    @GetMapping("")
     public GingestResponse ingest(
             @RequestParam String projectId,
             @RequestParam(required = false) String branch) {
@@ -74,5 +75,10 @@ public class GingestController {
 
         // 6. 返回包含响应头和字节流的 ResponseEntity
         return new ResponseEntity<>(contentBytes, headers, HttpStatus.OK);
+    }
+
+    @GetMapping("/branches")
+    public List<String> getBranches(@RequestParam String projectId) {
+        return gitLabService.getBranches(projectId);
     }
 }
