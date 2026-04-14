@@ -3,7 +3,6 @@ package com.backend.controller;
 import com.backend.dto.GingestResponse;
 import com.backend.service.GitLabService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -26,22 +25,22 @@ public class GingestController {
     private final GitLabService gitLabService;
 
     @Operation(summary = "提取指定项目的代码并转为Markdown文本")
-    @GetMapping
+    @GetMapping("/api/ingest")
     public GingestResponse ingest(
-            @Parameter(description = "GitLab 项目ID或路径")
-            @RequestParam String projectId) {
-        return gitLabService.ingestRepository(projectId);
+            @RequestParam String projectId,
+            @RequestParam(required = false) String branch) {
+        return gitLabService.ingestRepository(projectId, branch);
     }
 
     // 👇 改造后的下载接口
     @Operation(summary = "提取代码并作为 TXT 文件下载")
     @GetMapping(value = "/download")
     public ResponseEntity<byte[]> downloadAsTxt(
-            @Parameter(description = "GitLab 项目ID或路径")
-            @RequestParam String projectId) {
+            @RequestParam String projectId,
+            @RequestParam(required = false) String branch) {
 
         // 1. 获取结构化的响应数据
-        GingestResponse response = gitLabService.ingestRepository(projectId);
+        GingestResponse response = gitLabService.ingestRepository(projectId, branch);
 
         // 2. 像 GitIngest 那样，优雅地把数据拼装成一个包含摘要、目录树和正文的纯文本
         StringBuilder txtBuilder = new StringBuilder();

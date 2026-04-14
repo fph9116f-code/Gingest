@@ -29,13 +29,17 @@ public class GitLabService {
     /**
      * 拉取代码并生成 Markdown 格式的纯文本
      *
-     * @param input 项目 ID (如 123) 或者项目路径 (如 "zysoft/medical-order")
+     * @param input  项目 ID (如 123) 或者项目路径 (如 "zysoft/medical-order")
+     * @param branch 分支名 (如 "develop", "feature/abc")。如果传 null 或空字符串，则默认拉取主分支
      */
-    public GingestResponse ingestRepository(String input) {
+    public GingestResponse ingestRepository(String input, String branch) {
         String projectIdOrPath = parseProjectIdentifier(input);
 
-        // 【新增日志】开始解析的提示
-        log.info("开始拉取并解析 GitLab 仓库: {}", projectIdOrPath);
+        // 处理分支参数：为空则传入 null，GitLab4J 内部会默认拉取 default branch
+        String targetBranch = (branch == null || branch.trim().isEmpty()) ? null : branch.trim();
+
+        // 【新增日志】开始解析的提示，包含分支信息
+        log.info("开始拉取并解析 GitLab 仓库: {}, 目标分支: {}", projectIdOrPath, targetBranch != null ? targetBranch : "默认主分支");
         // 【新增时间统计】记录开始时间
         long startTime = System.currentTimeMillis();
 
@@ -44,8 +48,9 @@ public class GitLabService {
         int fileCount = 0;
 
         try {
+            // 将 targetBranch 传入 getRepositoryArchive
             InputStream archiveStream = gitLabApi.getRepositoryApi()
-                    .getRepositoryArchive(projectIdOrPath, (String) null, org.gitlab4j.api.Constants.ArchiveFormat.ZIP);
+                    .getRepositoryArchive(projectIdOrPath, targetBranch, org.gitlab4j.api.Constants.ArchiveFormat.ZIP);
 
             try (ZipInputStream zipIn = new ZipInputStream(archiveStream)) {
                 ZipEntry entry;
@@ -79,7 +84,7 @@ public class GitLabService {
 
             // 3. 构建返回对象
             return GingestResponse.builder()
-                    .projectName(projectIdOrPath)
+                    .projectName(projectIdOrPath + (targetBranch != null ? " (" + targetBranch + ")" : "")) // 在响应中也带上分支名
                     .fileCount(fileCount)
                     .estimatedTokens(estimatedTokens)
                     .directoryTree(buildDirectoryTree(processedFiles)) // 生成树状结构
@@ -88,7 +93,7 @@ public class GitLabService {
 
         } catch (Exception e) {
             log.error("处理代码流发生异常", e);
-            throw new RuntimeException("解析仓库失败: " + e.getMessage());
+            throw new RuntimeException("解析仓库失败，请检查项目权限或分支名是否正确: " + e.getMessage());
         }
     }
 
