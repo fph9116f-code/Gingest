@@ -120,7 +120,7 @@ const handleIngest = async () => {
         params: { projectId: searchInput.value, branch: selectedBranch.value }
       }),
       // 这里调用我们刚才新加的 facades 接口，并加了 catch 防止它失败导致整个流程中断
-      axios.get<FacadeInfo[]>('/api/facades', {
+      axios.get<FacadeInfo[]>('/api/ingest/facades', {
         params: { projectId: searchInput.value, branch: selectedBranch.value }
       }).catch(err => {
         console.warn('获取 Facade 接口数据失败', err);
