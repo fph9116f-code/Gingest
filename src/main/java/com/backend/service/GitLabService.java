@@ -82,10 +82,6 @@ public class GitLabService {
             String finalContent = contentBuilder.toString();
             long estimatedTokens = finalContent.length() / 4;
 
-            // 打印处理结果和耗时
-            log.info("解析完成！共处理 {} 个有效文件，预估 {} tokens，耗时 {} ms",
-                    fileCount, estimatedTokens, (System.currentTimeMillis() - startTime));
-
             // 【新增】：计算最终文本的字节大小
             long byteSize = finalContent.getBytes(StandardCharsets.UTF_8).length;
 
