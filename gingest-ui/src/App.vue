@@ -262,13 +262,62 @@ const resetView = () => {
   }
 }
 
+// --- 改造后的 handleDownload：支持按需下载与纯前端极速导出 ---
 const handleDownload = () => {
-  if (!searchInput.value) return
-  let downloadUrl = `/api/ingest/download?projectId=${encodeURIComponent(searchInput.value)}`
-  if (selectedBranch.value) downloadUrl += `&branch=${encodeURIComponent(selectedBranch.value)}`
-  window.open(downloadUrl, '_blank')
-}
+  if (!resultData.value) return
 
+  let downloadContent = ''
+
+  // 尝试获取当前目录树中被勾选的文件节点
+  const checkedNodes = dirTreeRef.value ? dirTreeRef.value.getCheckedNodes().filter(n => n.isFile) : []
+
+  if (checkedNodes.length > 0) {
+    // 【场景 1：有勾选文件】 -> 只组装并下载勾选的文件
+    const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
+      + generateTreeText(resultData.value.directoryTree)
+
+    let contentText = "\n\n================================================\nSelected Files Content:\n================================================\n\n"
+    checkedNodes.forEach(file => {
+      contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
+    })
+
+    // 顶部加上摘要信息
+    downloadContent = `Project: ${resultData.value.projectName}\n` +
+      `Export Type: Selected Files (${checkedNodes.length} files)\n\n` +
+      treeText + contentText
+
+    ElMessage.success(`正在下载选中的 ${checkedNodes.length} 个核心文件...`)
+  } else {
+    // 【场景 2：没有任何勾选】 -> 默认下载全库完整代码
+    const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
+      + generateTreeText(resultData.value.directoryTree)
+
+    downloadContent = `Project: ${resultData.value.projectName}\n` +
+      `Export Type: Full Repository (${resultData.value.fileCount} files)\n\n` +
+      treeText + "\n\nFiles Content:\n------------------------------------------------\n" +
+      resultData.value.fullContent
+
+    ElMessage.success('正在下载全库完整代码...')
+  }
+
+  // 利用 Blob API 纯前端生成 TXT 文件，完全不需要后端交互
+  const blob = new Blob([downloadContent], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+
+  // 生成安全的文件名 (如果有勾选文件，文件名加上 _selected 标识)
+  const safeProjectName = searchInput.value.replace(/[\\/:*?"<>|]/g, '_')
+  link.download = `${safeProjectName}_gingest${checkedNodes.length > 0 ? '_selected' : '_full'}.txt`
+
+  // 触发浏览器静默下载
+  document.body.appendChild(link)
+  link.click()
+
+  // 释放内存
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
 const handleCopy = async () => {
   if (!resultData.value || !resultData.value.content) return
   try {
