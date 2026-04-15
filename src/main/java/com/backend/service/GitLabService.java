@@ -326,7 +326,7 @@ public class GitLabService {
 
 
     /**
-     * 提取项目中 facade 包下的所有类名及方法名
+     * 提取项目中 facade 包下的所有类名及方法名（包含 Swagger/OpenAPI 注解注释）
      */
     public List<FacadeInfo> extractFacadeMethods(String input, String branch) {
         String projectIdOrPath = parseProjectIdentifier(input);
@@ -337,12 +337,17 @@ public class GitLabService {
 
         List<FacadeInfo> facadeList = new ArrayList<>();
 
-        // 【终极优化版】正则表达式：精准捕获方法名，无视参数换行、复杂注解和抛出异常
+        // 匹配 Java 方法签名的正则表达式
         Pattern methodPattern = Pattern.compile(
                 "(?:public\\s+|protected\\s+|private\\s+)?(?:static\\s+|final\\s+|abstract\\s+|default\\s+)*(?!class\\b|interface\\b|enum\\b|@interface\\b)(?:[\\w<>\\[\\]?.,]+\\s+)+(\\w+)\\s*\\("
         );
 
-        // 需要排除的 Java 关键字（防止误捕获代码块里的原生语句）
+        // 【新增魔法】：匹配 @Operation(summary = "...") 或 @ApiOperation(value = "...")
+        // [\\s\\S]*? 用于非贪婪匹配跨行内容，完美应对括号内有多个属性换行的情况
+        Pattern operationPattern = Pattern.compile(
+                "@(?:Operation|ApiOperation)\\s*\\([\\s\\S]*?(?:summary|value)\\s*=\\s*\"([^\"]+)\""
+        );
+
         Set<String> ignoreWords = Set.of("new", "return", "throw", "if", "else", "for", "while", "catch", "switch", "try", "super", "this");
 
         try {
@@ -355,28 +360,45 @@ public class GitLabService {
                     String fileName = entry.getName();
                     String lowerName = fileName.toLowerCase();
 
-                    // 过滤条件：1.是文件 2.结尾是.java 3.路径中包含 facade 文件夹（兼容任何层级，即使在根目录）
+                    // 过滤 facade 目录下的 Java 文件
                     if (!entry.isDirectory() && lowerName.endsWith(".java") && lowerName.matches(".*(?:^|/)facade/.*")) {
                         String cleanPath = cleanRootPath(fileName);
                         String fileContent = new String(zipIn.readAllBytes(), StandardCharsets.UTF_8);
 
-                        // 提取类名
                         String className = fileName.substring(fileName.lastIndexOf("/") + 1, fileName.lastIndexOf("."));
                         List<String> methods = new ArrayList<>();
 
-                        // 使用正则匹配提取方法名
                         Matcher matcher = methodPattern.matcher(fileContent);
+                        int lastEnd = 0; // 记录上一个方法结束的位置
+
                         while (matcher.find()) {
                             String methodName = matcher.group(1).trim();
-                            // 过滤掉与类名相同的构造方法，以及 Java 原生关键字
+                            int currentStart = matcher.start();
+
+                            // 【核心逻辑】：截取上一个方法结尾到当前方法开头之间的代码块，用来寻找属于当前方法的注解
+                            String precedingText = fileContent.substring(lastEnd, currentStart);
+                            lastEnd = matcher.end();
+
                             if (!methodName.equals(className) && !ignoreWords.contains(methodName)) {
-                                if (!methods.contains(methodName)) {
-                                    methods.add(methodName);
+
+                                // 检查是否已添加过（通过前缀匹配，巧妙过滤掉方法重载导致的重复展示）
+                                boolean exists = methods.stream().anyMatch(m -> m.startsWith(methodName + " ("));
+
+                                if (!exists) {
+                                    // 在方法上方的文本块中寻找注解
+                                    Matcher opMatcher = operationPattern.matcher(precedingText);
+                                    String summary = "-";
+                                    while (opMatcher.find()) {
+                                        // 如果找到多个（例如被注释掉的旧代码），我们只取最后一个最靠近方法的
+                                        summary = opMatcher.group(1).trim();
+                                    }
+
+                                    // 组装最终展示的字符串并放入列表
+                                    methods.add(methodName + " (" + summary + ")");
                                 }
                             }
                         }
 
-                        // 如果这个类里面有扫出方法，就加到结果树里
                         if (!methods.isEmpty()) {
                             facadeList.add(FacadeInfo.builder()
                                     .className(className)

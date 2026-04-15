@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { Document, Download, Connection } from '@element-plus/icons-vue'
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElTree } from 'element-plus'
 
 // --- 1. 定义后端返回的数据结构接口 ---
 interface GingestResponse {
@@ -30,11 +30,24 @@ const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
-// Facade 树状图数据
+// Facade 树状图数据及检索功能
 const facadeTreeData = ref<TreeNode[]>([])
 const treeProps = {
   children: 'children',
   label: 'label',
+}
+const filterText = ref('') // 绑定的搜索文本
+const treeRef = ref<InstanceType<typeof ElTree>>() // 树组件的引用
+
+// 监听搜索框变化，实时触发树形图的过滤逻辑
+watch(filterText, (val) => {
+  treeRef.value!.filter(val)
+})
+
+// 树节点过滤的核心逻辑 (忽略大小写)
+const filterNode = (value: string, data: TreeNode) => {
+  if (!value) return true
+  return data.label.toLowerCase().includes(value.toLowerCase())
 }
 
 const projectList = ref<string[]>([])
@@ -52,14 +65,12 @@ const startDrag = () => {
   isDragging.value = true
   document.addEventListener('mousemove', onDrag)
   document.addEventListener('mouseup', stopDrag)
-  document.body.style.userSelect = 'none' // 防止拖拽时误选中文本
+  document.body.style.userSelect = 'none'
 }
 
 const onDrag = (e: MouseEvent) => {
   if (!isDragging.value) return
-  // 鼠标Y轴坐标 - 顶部导航栏高度(60px) - 主体内边距(20px)
   let newHeight = e.clientY - 80
-  // 限制拖拽的最小和最大高度，防止把窗口挤没
   if (newHeight < 150) newHeight = 150
   if (newHeight > window.innerHeight - 200) newHeight = window.innerHeight - 200
   topHeight.value = newHeight
@@ -69,7 +80,7 @@ const stopDrag = () => {
   isDragging.value = false
   document.removeEventListener('mousemove', onDrag)
   document.removeEventListener('mouseup', stopDrag)
-  document.body.style.userSelect = '' // 恢复文本选中能力
+  document.body.style.userSelect = ''
 }
 
 // --- 方法：获取用户有权限的所有项目列表 ---
@@ -134,6 +145,7 @@ const handleIngest = async () => {
 
   loading.value = true
   facadeTreeData.value = []
+  filterText.value = '' // 每次提取新项目时，清空上一次的搜索记录
 
   try {
     const [ingestRes, facadeRes] = await Promise.all([
@@ -256,11 +268,22 @@ const handleCopy = async () => {
             </el-col>
 
             <el-col :span="9" class="h-100">
-              <div class="panel-title">Facade 接口 (Interfaces)</div>
+              <div class="panel-header-with-search">
+                <div class="panel-title">Facade 接口 (Interfaces)</div>
+                <el-input
+                  v-model="filterText"
+                  placeholder="搜索方法、注释或类名..."
+                  size="small"
+                  clearable
+                  class="facade-search"
+                />
+              </div>
               <el-card shadow="never" class="panel-card scrollable-card">
                 <el-tree
+                  ref="treeRef"
                   :data="facadeTreeData"
                   :props="treeProps"
+                  :filter-node-method="filterNode"
                   empty-text="未扫描到 Facade 接口数据"
                   class="facade-tree"
                 />
@@ -345,7 +368,6 @@ const handleCopy = async () => {
   width: 180px;
 }
 
-/* 主体容器需要 overflow:hidden 以防止整个页面被意外撑开 */
 .main-content {
   padding: 20px;
   display: flex;
@@ -355,24 +377,37 @@ const handleCopy = async () => {
   overflow: hidden;
 }
 
+/* --- 面板标题与检索框同行布局 --- */
+.panel-header-with-search {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.panel-header-with-search .panel-title {
+  margin-bottom: 0; /* 覆盖全局的 mb-10 */
+}
+.facade-search {
+  width: 180px;
+}
+
 .panel-title {
   font-weight: bold;
   margin-bottom: 10px;
   color: #303133;
 }
 
-/* --- 顶部区域 --- */
 .top-section {
-  flex: none; /* 高度完全由 style 动态控制，不参与弹性伸缩 */
+  flex: none;
 }
 
 .h-100 {
   height: 100%;
 }
 
-/* --- 修复溢出问题的核心：可内滚动的卡片 --- */
+/* 保证卡片依然能填满剩余高度，但不被搜索框挤压出去 */
 .panel-card {
-  height: calc(100% - 30px);
+  height: calc(100% - 32px); /* 减去标题/搜索框的高度 */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -380,7 +415,7 @@ const handleCopy = async () => {
 
 .scrollable-card :deep(.el-card__body) {
   flex: 1;
-  overflow-y: auto; /* 子元素过多时，只在卡片内部出滚动条！绝不向外撑破 */
+  overflow-y: auto;
   padding: 10px 15px;
   min-height: 0;
 }
@@ -401,7 +436,6 @@ const handleCopy = async () => {
   color: #409EFF;
 }
 
-/* --- 动态高度适配的文本域包装器 --- */
 .textarea-wrapper {
   height: calc(100% - 30px);
 }
@@ -413,10 +447,9 @@ const handleCopy = async () => {
   resize: none;
 }
 
-/* --- 神级拖拽分割线 --- */
 .drag-divider {
   height: 18px;
-  cursor: row-resize; /* 鼠标悬浮时变成上下拉伸图标 */
+  cursor: row-resize;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -435,10 +468,9 @@ const handleCopy = async () => {
 
 .drag-divider:hover .drag-line,
 .drag-divider:active .drag-line {
-  background-color: #409EFF; /* 拖拽时变为品牌蓝 */
+  background-color: #409EFF;
 }
 
-/* --- 底部区域自动铺满 --- */
 .bottom-section {
   flex: 1;
   display: flex;
