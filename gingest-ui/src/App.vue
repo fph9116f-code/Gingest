@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { Document, Download, Connection, Refresh, CircleCheck } from '@element-plus/icons-vue'
+// 【新增引入了 Folder 图标】
+import { Document, Download, Connection, Refresh, CircleCheck, Folder } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElTree } from 'element-plus'
 
@@ -21,7 +22,7 @@ interface FacadeInfo {
 }
 
 interface TreeNode {
-  id?: number // 给每个节点加个唯一标识，用于 checkbox
+  id?: number
   label: string
   isFile: boolean
   fullPath?: string
@@ -133,7 +134,6 @@ const handleIngest = async () => {
       axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value } }).catch(() => ({ data: [] }))
     ])
 
-    // 递归为目录树分配自增的唯一 ID，供 checkbox 使用
     let idCounter = 1
     const assignIds = (nodes: TreeNode[]) => {
       nodes.forEach(node => {
@@ -161,33 +161,13 @@ const handleIngest = async () => {
   }
 }
 
-const handleDirTreeClick = (node: TreeNode) => {
-  if (!resultData.value) return
-  const gathered = gatherContent(node)
-  resultData.value.content = gathered || '该文件夹下为空或无有效代码文件'
-  currentViewTitle.value = `查看: ${node.label}`
-}
+// （已经删除了原有的 handleDirTreeClick 预览方法，彻底解耦）
 
-const gatherContent = (node: TreeNode): string => {
-  if (node.isFile) {
-    return `================================================\nFile: ${node.fullPath || node.label}\n================================================\n${node.content || ''}\n\n`
-  }
-  let res = ''
-  if (node.children) {
-    for (const child of node.children) {
-      res += gatherContent(child)
-    }
-  }
-  return res
-}
-
-// --- 新增：将前端 JSON 树递归渲染为纯文本大纲的方法 ---
 const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
   let text = ''
   nodes.forEach((node, index) => {
     const isLast = index === nodes.length - 1
     const connector = isLast ? '└── ' : '├── '
-    // 文件夹名字后面补上斜杠以示区分
     text += prefix + connector + node.label + (node.isFile ? '' : '/') + '\n'
     if (node.children && node.children.length > 0) {
       const childPrefix = prefix + (isLast ? '    ' : '│   ')
@@ -197,13 +177,10 @@ const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
   return text
 }
 
-// --- 新增：处理“组装勾选”逻辑 ---
 const handleAssembleSelected = () => {
   if (!resultData.value || !dirTreeRef.value) return
 
-  // 获取所有被勾选的节点
   const checkedNodes = dirTreeRef.value.getCheckedNodes()
-  // 我们只需要提取真实文件的代码
   const selectedFiles = checkedNodes.filter(node => node.isFile)
 
   if (selectedFiles.length === 0) {
@@ -211,17 +188,14 @@ const handleAssembleSelected = () => {
     return
   }
 
-  // 1. 生成全局完整的目录树纯文本 (给大模型看骨架用)
   const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
     + generateTreeText(resultData.value.directoryTree)
 
-  // 2. 仅组装被勾选的文件的代码内容
   let contentText = "\n\n================================================\nSelected Files Content:\n================================================\n\n"
   selectedFiles.forEach(file => {
     contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
   })
 
-  // 3. 将两者拼接，覆盖底部的展示区
   resultData.value.content = treeText + contentText
   currentViewTitle.value = `组装完毕: 完整大纲 + ${selectedFiles.length} 个文件代码`
   ElMessage.success(`成功组装！共抽取了 ${selectedFiles.length} 个核心文件`)
@@ -255,24 +229,18 @@ const resetView = () => {
   if (resultData.value && resultData.value.fullContent) {
     resultData.value.content = resultData.value.fullContent
     currentViewTitle.value = '全部提取结果 (All Files)'
-    // 清空目录树的勾选状态
     if (dirTreeRef.value) {
       dirTreeRef.value.setCheckedKeys([])
     }
   }
 }
 
-// --- 改造后的 handleDownload：支持按需下载与纯前端极速导出 ---
 const handleDownload = () => {
   if (!resultData.value) return
-
   let downloadContent = ''
-
-  // 尝试获取当前目录树中被勾选的文件节点
   const checkedNodes = dirTreeRef.value ? dirTreeRef.value.getCheckedNodes().filter(n => n.isFile) : []
 
   if (checkedNodes.length > 0) {
-    // 【场景 1：有勾选文件】 -> 只组装并下载勾选的文件
     const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
       + generateTreeText(resultData.value.directoryTree)
 
@@ -281,14 +249,12 @@ const handleDownload = () => {
       contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
     })
 
-    // 顶部加上摘要信息
     downloadContent = `Project: ${resultData.value.projectName}\n` +
       `Export Type: Selected Files (${checkedNodes.length} files)\n\n` +
       treeText + contentText
 
     ElMessage.success(`正在下载选中的 ${checkedNodes.length} 个核心文件...`)
   } else {
-    // 【场景 2：没有任何勾选】 -> 默认下载全库完整代码
     const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
       + generateTreeText(resultData.value.directoryTree)
 
@@ -300,24 +266,20 @@ const handleDownload = () => {
     ElMessage.success('正在下载全库完整代码...')
   }
 
-  // 利用 Blob API 纯前端生成 TXT 文件，完全不需要后端交互
   const blob = new Blob([downloadContent], { type: 'text/plain;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
 
-  // 生成安全的文件名 (如果有勾选文件，文件名加上 _selected 标识)
   const safeProjectName = searchInput.value.replace(/[\\/:*?"<>|]/g, '_')
   link.download = `${safeProjectName}_gingest${checkedNodes.length > 0 ? '_selected' : '_full'}.txt`
 
-  // 触发浏览器静默下载
   document.body.appendChild(link)
   link.click()
-
-  // 释放内存
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
 }
+
 const handleCopy = async () => {
   if (!resultData.value || !resultData.value.content) return
   try {
@@ -377,12 +339,22 @@ const handleCopy = async () => {
                   :data="resultData.directoryTree"
                   :props="treeProps"
                   :filter-node-method="filterNode"
-                  @node-click="handleDirTreeClick"
                   empty-text="暂无有效代码文件"
                   class="facade-tree"
                   show-checkbox
                   node-key="id"
-                />
+                  check-on-click-node
+                >
+                  <template #default="{ node, data }">
+                    <span class="custom-tree-node" :class="data.isFile ? 'is-file' : 'is-folder'">
+                      <el-icon class="node-icon">
+                        <Document v-if="data.isFile" />
+                        <Folder v-else />
+                      </el-icon>
+                      <span class="node-label">{{ node.label }}</span>
+                    </span>
+                  </template>
+                </el-tree>
               </el-card>
             </el-col>
 
@@ -462,6 +434,22 @@ const handleCopy = async () => {
 .facade-tree { font-family: 'Consolas', 'Courier New', Courier, monospace; font-size: 13px; }
 .panel-card p { margin: 5px 0; font-size: 13px; color: #606266; }
 .summary-text { word-break: break-all; color: #409EFF; }
+
+/* === 新增：自定义树节点的淡色样式 === */
+.custom-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.node-icon {
+  font-size: 14px;
+}
+.is-folder {
+  color: #79bbff; /* Element 标准淡蓝色 */
+}
+.is-file {
+  color: #b1b3b8; /* Element 标准淡灰色 */
+}
 
 .textarea-wrapper { height: calc(100% - 30px); }
 .drag-divider { height: 18px; cursor: row-resize; display: flex; align-items: center; justify-content: center; margin: 2px 0; flex-shrink: 0; transition: background-color 0.2s; }
