@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-// 【新增引入了 Folder 图标】
 import { Document, Download, Connection, Refresh, CircleCheck, Folder } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElTree } from 'element-plus'
@@ -12,7 +11,11 @@ interface GingestResponse {
   formattedSize: string
   directoryTree: TreeNode[]
   content: string
+  // 新增：用于缓存全库的原始统计数据
   fullContent?: string
+  fullFileCount?: number
+  fullEstimatedTokens?: number
+  fullFormattedSize?: string
 }
 
 interface FacadeInfo {
@@ -88,6 +91,14 @@ const stopDrag = () => {
   document.body.style.userSelect = ''
 }
 
+// --- 新增：前端纯 JS 版的大小格式化与 Tokens 估算算法 ---
+const formatSize = (sizeInBytes: number): string => {
+  if (sizeInBytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const digitGroups = Math.floor(Math.log10(sizeInBytes) / Math.log10(1024))
+  return (sizeInBytes / Math.pow(1024, digitGroups)).toFixed(2) + ' ' + units[digitGroups]
+}
+
 const handleFetchProjects = async (visible: boolean) => {
   if (visible && projectList.value.length === 0) {
     loadingProjects.value = true
@@ -144,7 +155,12 @@ const handleIngest = async () => {
     assignIds(ingestRes.data.directoryTree)
 
     resultData.value = ingestRes.data
+
+    // 【核心改动】：缓存全库的完整统计数据，方便后续“恢复”
     resultData.value.fullContent = ingestRes.data.content
+    resultData.value.fullFileCount = ingestRes.data.fileCount
+    resultData.value.fullEstimatedTokens = ingestRes.data.estimatedTokens
+    resultData.value.fullFormattedSize = ingestRes.data.formattedSize
 
     facadeTreeData.value = facadeRes.data.map(item => ({
       label: item.className,
@@ -160,8 +176,6 @@ const handleIngest = async () => {
     loading.value = false
   }
 }
-
-// （已经删除了原有的 handleDirTreeClick 预览方法，彻底解耦）
 
 const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
   let text = ''
@@ -196,7 +210,14 @@ const handleAssembleSelected = () => {
     contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
   })
 
-  resultData.value.content = treeText + contentText
+  const finalString = treeText + contentText
+
+  // 【核心改动】：动态计算选中后的 Token、大小、文件数并刷新面板
+  resultData.value.content = finalString
+  resultData.value.fileCount = selectedFiles.length
+  resultData.value.estimatedTokens = Math.floor(finalString.length / 4) // 大致估算：4个字符1个Token
+  resultData.value.formattedSize = formatSize(new Blob([finalString]).size) // 精准计算UTF-8字节大小
+
   currentViewTitle.value = `组装完毕: 完整大纲 + ${selectedFiles.length} 个文件代码`
   ElMessage.success(`成功组装！共抽取了 ${selectedFiles.length} 个核心文件`)
 }
@@ -216,8 +237,16 @@ const findContentByPath = (nodes: TreeNode[], targetPath: string): string | null
 const handleFacadeTreeClick = (node: any) => {
   if (!resultData.value || !node.path) return
   const content = findContentByPath(resultData.value.directoryTree, node.path)
+
   if (content) {
-    resultData.value.content = `================================================\nFile: ${node.path}\n================================================\n${content}\n`
+    const finalString = `================================================\nFile: ${node.path}\n================================================\n${content}\n`
+
+    // 【核心改动】：单点文件时，也将统计面板更新为单文件的属性
+    resultData.value.content = finalString
+    resultData.value.fileCount = 1
+    resultData.value.estimatedTokens = Math.floor(finalString.length / 4)
+    resultData.value.formattedSize = formatSize(new Blob([finalString]).size)
+
     const displayName = node.parentClass ? node.parentClass : node.label
     currentViewTitle.value = `查看接口源码: ${displayName}`
   } else {
@@ -227,7 +256,12 @@ const handleFacadeTreeClick = (node: any) => {
 
 const resetView = () => {
   if (resultData.value && resultData.value.fullContent) {
+    // 【核心改动】：把之前缓存的“全库属性”完璧归赵
     resultData.value.content = resultData.value.fullContent
+    resultData.value.fileCount = resultData.value.fullFileCount!
+    resultData.value.estimatedTokens = resultData.value.fullEstimatedTokens!
+    resultData.value.formattedSize = resultData.value.fullFormattedSize!
+
     currentViewTitle.value = '全部提取结果 (All Files)'
     if (dirTreeRef.value) {
       dirTreeRef.value.setCheckedKeys([])
@@ -259,7 +293,7 @@ const handleDownload = () => {
       + generateTreeText(resultData.value.directoryTree)
 
     downloadContent = `Project: ${resultData.value.projectName}\n` +
-      `Export Type: Full Repository (${resultData.value.fileCount} files)\n\n` +
+      `Export Type: Full Repository (${resultData.value.fullFileCount} files)\n\n` +
       treeText + "\n\nFiles Content:\n------------------------------------------------\n" +
       resultData.value.fullContent
 
@@ -319,9 +353,9 @@ const handleCopy = async () => {
               </div>
               <el-card shadow="never" class="panel-card scrollable-card">
                 <p><strong>项目:</strong><br/> <span class="summary-text">{{ resultData.projectName }}</span></p>
-                <p><strong>文件数:</strong> {{ resultData.fileCount }} files</p>
-                <p><strong>Tokens:</strong> {{ resultData.estimatedTokens }}</p>
-                <p><strong>大小:</strong> {{ resultData.formattedSize }}</p>
+                <p><strong>文件数:</strong> <span style="color: #67C23A; font-weight: bold;">{{ resultData.fileCount }}</span> files</p>
+                <p><strong>Tokens:</strong> <span style="color: #E6A23C; font-weight: bold;">{{ resultData.estimatedTokens }}</span></p>
+                <p><strong>大小:</strong> <span style="color: #F56C6C; font-weight: bold;">{{ resultData.formattedSize }}</span></p>
               </el-card>
             </el-col>
 
@@ -435,7 +469,6 @@ const handleCopy = async () => {
 .panel-card p { margin: 5px 0; font-size: 13px; color: #606266; }
 .summary-text { word-break: break-all; color: #409EFF; }
 
-/* === 新增：自定义树节点的淡色样式 === */
 .custom-tree-node {
   display: flex;
   align-items: center;
@@ -445,10 +478,10 @@ const handleCopy = async () => {
   font-size: 14px;
 }
 .is-folder {
-  color: #79bbff; /* Element 标准淡蓝色 */
+  color: #79bbff;
 }
 .is-file {
-  color: #b1b3b8; /* Element 标准淡灰色 */
+  color: #b1b3b8;
 }
 
 .textarea-wrapper { height: calc(100% - 30px); }
