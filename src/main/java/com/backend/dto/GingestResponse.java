@@ -10,7 +10,8 @@ public class GingestResponse {
     private String projectName;
     private int fileCount;
     private long estimatedTokens;
-    
+    private String formattedSize;
+
     // 目录结构树 (对应 Directory Structure)
     private String directoryTree;
     

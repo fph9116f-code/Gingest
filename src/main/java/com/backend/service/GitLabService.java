@@ -82,7 +82,14 @@ public class GitLabService {
             String finalContent = contentBuilder.toString();
             long estimatedTokens = finalContent.length() / 4;
 
-            // 【新增日志】打印处理结果和耗时
+            // 打印处理结果和耗时
+            log.info("解析完成！共处理 {} 个有效文件，预估 {} tokens，耗时 {} ms",
+                    fileCount, estimatedTokens, (System.currentTimeMillis() - startTime));
+
+            // 【新增】：计算最终文本的字节大小
+            long byteSize = finalContent.getBytes(StandardCharsets.UTF_8).length;
+
+            // 【新增日志】顺便把字节大小也打印出来
             log.info("解析完成！共处理 {} 个有效文件，预估 {} tokens，耗时 {} ms",
                     fileCount, estimatedTokens, (System.currentTimeMillis() - startTime));
 
@@ -91,6 +98,7 @@ public class GitLabService {
                     .projectName(projectIdOrPath + (targetBranch != null ? " (" + targetBranch + ")" : "")) // 在响应中也带上分支名
                     .fileCount(fileCount)
                     .estimatedTokens(estimatedTokens)
+                    .formattedSize(formatSize(byteSize)) // <--- 【核心修复】把计算好的格式化大小塞进去！
                     .directoryTree(buildDirectoryTree(processedFiles)) // 生成树状结构
                     .content(finalContent)
                     .build();
@@ -390,5 +398,15 @@ public class GitLabService {
             log.error("提取 Facade 方法异常", e);
             throw new RuntimeException("提取 Facade 方法失败: " + e.getMessage());
         }
+    }
+
+    // 辅助方法：将字节数转换为 KB/MB 格式
+    private String formatSize(long size) {
+        if (size <= 0) {
+            return "0 B";
+        }
+        final String[] units = new String[]{"B", "KB", "MB", "GB", "TB"};
+        int digitGroups = (int) (Math.log10(size) / Math.log10(1024));
+        return new java.text.DecimalFormat("#,##0.##").format(size / Math.pow(1024, digitGroups)) + " " + units[digitGroups];
     }
 }
