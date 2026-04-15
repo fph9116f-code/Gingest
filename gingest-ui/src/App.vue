@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { Document, Download, Connection, Refresh } from '@element-plus/icons-vue'
+import { Document, Download, Connection, Refresh, CircleCheck } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElTree } from 'element-plus'
 
@@ -9,9 +9,9 @@ interface GingestResponse {
   fileCount: number
   estimatedTokens: number
   formattedSize: string
-  directoryTree: TreeNode[] // 现在后端返回的是树形对象数组了
+  directoryTree: TreeNode[]
   content: string
-  fullContent?: string // 用于前端缓存完整代码
+  fullContent?: string
 }
 
 interface FacadeInfo {
@@ -21,6 +21,7 @@ interface FacadeInfo {
 }
 
 interface TreeNode {
+  id?: number // 给每个节点加个唯一标识，用于 checkbox
   label: string
   isFile: boolean
   fullPath?: string
@@ -32,14 +33,11 @@ const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
-// 动态视图的标题
 const currentViewTitle = ref<string>('全部提取结果 (All Files)')
 
-// 中间：目录结构树的响应式数据
 const filterDirText = ref('')
 const dirTreeRef = ref<InstanceType<typeof ElTree>>()
 
-// 右侧：Facade 树的响应式数据
 const facadeTreeData = ref<TreeNode[]>([])
 const filterText = ref('')
 const treeRef = ref<InstanceType<typeof ElTree>>()
@@ -49,14 +47,11 @@ const treeProps = {
   label: 'label',
 }
 
-// 监听搜索框变化
 watch(filterDirText, (val) => { dirTreeRef.value!.filter(val) })
 watch(filterText, (val) => { treeRef.value!.filter(val) })
 
-// 统一的树节点过滤逻辑 (忽略大小写)
 const filterNode = (value: string, data: any) => {
   if (!value) return true
-  // 加上 ? 防止万一哪个节点没有 label 属性导致报错
   return data.label?.toLowerCase().includes(value.toLowerCase())
 }
 
@@ -138,13 +133,24 @@ const handleIngest = async () => {
       axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value } }).catch(() => ({ data: [] }))
     ])
 
+    // 递归为目录树分配自增的唯一 ID，供 checkbox 使用
+    let idCounter = 1
+    const assignIds = (nodes: TreeNode[]) => {
+      nodes.forEach(node => {
+        node.id = idCounter++
+        if (node.children) assignIds(node.children)
+      })
+    }
+    assignIds(ingestRes.data.directoryTree)
+
     resultData.value = ingestRes.data
-    resultData.value.fullContent = ingestRes.data.content // 缓存一份全局全量代码
+    resultData.value.fullContent = ingestRes.data.content
 
     facadeTreeData.value = facadeRes.data.map(item => ({
       label: item.className,
+      path: item.path,
       isFile: false,
-      children: item.methods.map(method => ({ label: method, isFile: true }))
+      children: item.methods.map(method => ({ label: method, path: item.path, parentClass: item.className, isFile: true }))
     }))
 
     ElMessage.success(`提取成功！共 ${ingestRes.data.fileCount} 个文件`)
@@ -155,7 +161,6 @@ const handleIngest = async () => {
   }
 }
 
-// === 核心互动：点击目录树触发内容刷新 ===
 const handleDirTreeClick = (node: TreeNode) => {
   if (!resultData.value) return
   const gathered = gatherContent(node)
@@ -163,7 +168,6 @@ const handleDirTreeClick = (node: TreeNode) => {
   currentViewTitle.value = `查看: ${node.label}`
 }
 
-// 递归拼接选中节点及子节点的所有代码
 const gatherContent = (node: TreeNode): string => {
   if (node.isFile) {
     return `================================================\nFile: ${node.fullPath || node.label}\n================================================\n${node.content || ''}\n\n`
@@ -177,11 +181,84 @@ const gatherContent = (node: TreeNode): string => {
   return res
 }
 
-// 恢复查看全库代码
+// --- 新增：将前端 JSON 树递归渲染为纯文本大纲的方法 ---
+const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
+  let text = ''
+  nodes.forEach((node, index) => {
+    const isLast = index === nodes.length - 1
+    const connector = isLast ? '└── ' : '├── '
+    // 文件夹名字后面补上斜杠以示区分
+    text += prefix + connector + node.label + (node.isFile ? '' : '/') + '\n'
+    if (node.children && node.children.length > 0) {
+      const childPrefix = prefix + (isLast ? '    ' : '│   ')
+      text += generateTreeText(node.children, childPrefix)
+    }
+  })
+  return text
+}
+
+// --- 新增：处理“组装勾选”逻辑 ---
+const handleAssembleSelected = () => {
+  if (!resultData.value || !dirTreeRef.value) return
+
+  // 获取所有被勾选的节点
+  const checkedNodes = dirTreeRef.value.getCheckedNodes()
+  // 我们只需要提取真实文件的代码
+  const selectedFiles = checkedNodes.filter(node => node.isFile)
+
+  if (selectedFiles.length === 0) {
+    ElMessage.warning('请先在目录树中勾选需要包含的文件或文件夹')
+    return
+  }
+
+  // 1. 生成全局完整的目录树纯文本 (给大模型看骨架用)
+  const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
+    + generateTreeText(resultData.value.directoryTree)
+
+  // 2. 仅组装被勾选的文件的代码内容
+  let contentText = "\n\n================================================\nSelected Files Content:\n================================================\n\n"
+  selectedFiles.forEach(file => {
+    contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
+  })
+
+  // 3. 将两者拼接，覆盖底部的展示区
+  resultData.value.content = treeText + contentText
+  currentViewTitle.value = `组装完毕: 完整大纲 + ${selectedFiles.length} 个文件代码`
+  ElMessage.success(`成功组装！共抽取了 ${selectedFiles.length} 个核心文件`)
+}
+
+
+const findContentByPath = (nodes: TreeNode[], targetPath: string): string | null => {
+  for (const n of nodes) {
+    if (n.isFile && n.fullPath === targetPath) return n.content || null
+    if (n.children && n.children.length > 0) {
+      const found = findContentByPath(n.children, targetPath)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+const handleFacadeTreeClick = (node: any) => {
+  if (!resultData.value || !node.path) return
+  const content = findContentByPath(resultData.value.directoryTree, node.path)
+  if (content) {
+    resultData.value.content = `================================================\nFile: ${node.path}\n================================================\n${content}\n`
+    const displayName = node.parentClass ? node.parentClass : node.label
+    currentViewTitle.value = `查看接口源码: ${displayName}`
+  } else {
+    ElMessage.warning('未在目录树中提取到该源码 (可能已被过滤)')
+  }
+}
+
 const resetView = () => {
   if (resultData.value && resultData.value.fullContent) {
     resultData.value.content = resultData.value.fullContent
     currentViewTitle.value = '全部提取结果 (All Files)'
+    // 清空目录树的勾选状态
+    if (dirTreeRef.value) {
+      dirTreeRef.value.setCheckedKeys([])
+    }
   }
 }
 
@@ -240,7 +317,10 @@ const handleCopy = async () => {
             <el-col :span="10" class="h-100">
               <div class="panel-header-with-search">
                 <div class="panel-title">目录结构 (Files Tree)</div>
-                <el-input v-model="filterDirText" placeholder="搜索文件或目录..." size="small" clearable class="facade-search" />
+                <div style="display: flex; gap: 8px;">
+                  <el-input v-model="filterDirText" placeholder="搜索..." size="small" clearable class="facade-search" />
+                  <el-button type="primary" size="small" :icon="CircleCheck" @click="handleAssembleSelected">组装勾选</el-button>
+                </div>
               </div>
               <el-card shadow="never" class="panel-card scrollable-card">
                 <el-tree
@@ -251,6 +331,8 @@ const handleCopy = async () => {
                   @node-click="handleDirTreeClick"
                   empty-text="暂无有效代码文件"
                   class="facade-tree"
+                  show-checkbox
+                  node-key="id"
                 />
               </el-card>
             </el-col>
@@ -261,7 +343,15 @@ const handleCopy = async () => {
                 <el-input v-model="filterText" placeholder="搜索方法、注释或类名..." size="small" clearable class="facade-search" />
               </div>
               <el-card shadow="never" class="panel-card scrollable-card">
-                <el-tree ref="treeRef" :data="facadeTreeData" :props="treeProps" :filter-node-method="filterNode" empty-text="未扫描到 Facade 接口" class="facade-tree" />
+                <el-tree
+                  ref="treeRef"
+                  :data="facadeTreeData"
+                  :props="treeProps"
+                  :filter-node-method="filterNode"
+                  @node-click="handleFacadeTreeClick"
+                  empty-text="未扫描到 Facade 接口"
+                  class="facade-tree"
+                />
               </el-card>
             </el-col>
 
