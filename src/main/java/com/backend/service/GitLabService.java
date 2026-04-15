@@ -240,10 +240,16 @@ public class GitLabService {
 
     public List<String> getAllAccessibleProjects() {
         try {
-            ProjectFilter filter = new ProjectFilter().withMembership(true);
-            return gitLabApi.getProjectApi().getProjects(filter).stream()
+            // 【性能提速魔法】：开启 simple 模式，按最近更新排序，极速拉取！
+            ProjectFilter filter = new ProjectFilter()
+                    .withMembership(true)
+                    .withSimple(true) // 核心：告诉 GitLab 不要计算存储大小、不要拉取 README，毫秒级返回！
+                    .withOrderBy(org.gitlab4j.api.Constants.ProjectOrderBy.UPDATED_AT);
+            // 删除了 .withSort() 规避版本差异，GitLab 默认按 updated_at 就是降序！
+
+            // 直接限制只拉取第 1 页，最多取前 200 个最近活跃的项目
+            return gitLabApi.getProjectApi().getProjects(filter, 1, 200).stream()
                     .map(org.gitlab4j.api.models.Project::getPathWithNamespace)
-                    .sorted()
                     .collect(java.util.stream.Collectors.toList());
         } catch (Exception e) {
             throw new RuntimeException("获取项目列表失败: " + e.getMessage());
