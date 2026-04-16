@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, markRaw } from 'vue'
 import { Document, Download, Connection, Refresh, CircleCheck, Folder } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElTree } from 'element-plus'
@@ -11,7 +11,6 @@ interface GingestResponse {
   formattedSize: string
   directoryTree: TreeNode[]
   content: string
-  // 新增：用于缓存全库的原始统计数据
   fullContent?: string
   fullFileCount?: number
   fullEstimatedTokens?: number
@@ -33,14 +32,17 @@ interface TreeNode {
   children?: TreeNode[]
 }
 
+// ==========================================
+// 【新增】：模式切换状态
+// ==========================================
+const fetchMode = ref<'gitlab' | 'local'>('gitlab')
+const localPathInput = ref<string>('')
+
 const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
-// ==========================================
-// 【新增】：防卡死预览截断逻辑
-// ==========================================
-const MAX_DISPLAY_LENGTH = 100000 // 10 万字符安全阈值，随便拖拽都不卡
+const MAX_DISPLAY_LENGTH = 100000
 const isContentTruncated = computed(() => {
   return resultData.value && resultData.value.content && resultData.value.content.length > MAX_DISPLAY_LENGTH
 })
@@ -112,7 +114,6 @@ const stopDrag = () => {
   document.body.style.userSelect = ''
 }
 
-// --- 新增：前端纯 JS 版的大小格式化与 Tokens 估算算法 ---
 const formatSize = (sizeInBytes: number): string => {
   if (sizeInBytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -152,19 +153,36 @@ const handleFetchBranches = async () => {
   }
 }
 
+// ==========================================
+// 【重构】：支持双模式路由请求
+// ==========================================
 const handleIngest = async () => {
-  if (!searchInput.value) return ElMessage.warning('请选择项目')
+  if (fetchMode.value === 'gitlab' && !searchInput.value) return ElMessage.warning('请选择项目')
+  if (fetchMode.value === 'local' && !localPathInput.value) return ElMessage.warning('请输入本地目录绝对路径')
+
   loading.value = true
   facadeTreeData.value = []
   filterText.value = ''
   filterDirText.value = ''
   currentViewTitle.value = '全部提取结果 (All Files)'
+  resultData.value = null // 清理内存
 
   try {
-    const [ingestRes, facadeRes] = await Promise.all([
-      axios.get<GingestResponse>('/api/ingest', { params: { projectId: searchInput.value, branch: selectedBranch.value } }),
-      axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value } }).catch(() => ({ data: [] }))
-    ])
+    let ingestRes: any;
+    let facadeRes: any = { data: [] };
+
+    // 根据所选模式分发 API 请求
+    if (fetchMode.value === 'gitlab') {
+      const [res1, res2] = await Promise.all([
+        axios.get<GingestResponse>('/api/ingest', { params: { projectId: searchInput.value, branch: selectedBranch.value } }),
+        axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value } }).catch(() => ({ data: [] }))
+      ])
+      ingestRes = res1;
+      facadeRes = res2;
+    } else {
+      // 本地模式极速读取
+      ingestRes = await axios.get<GingestResponse>('/api/ingest/local', { params: { localPath: localPathInput.value } })
+    }
 
     let idCounter = 1
     const assignIds = (nodes: TreeNode[]) => {
@@ -175,24 +193,44 @@ const handleIngest = async () => {
     }
     assignIds(ingestRes.data.directoryTree)
 
+    // 前端组装全量纯文本，释放后端传输压力
+    let assembledContent = ''
+    const gatherAll = (nodes: TreeNode[]) => {
+      nodes.forEach(n => {
+        if (n.isFile) {
+          assembledContent += `================================================\nFile: ${n.fullPath || n.label}\n================================================\n${n.content || ''}\n\n`
+        } else if (n.children) {
+          gatherAll(n.children)
+        }
+      })
+    }
+    gatherAll(ingestRes.data.directoryTree)
+
+    const fullTreeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n" + generateTreeText(ingestRes.data.directoryTree)
+    const finalFullContent = fullTreeText + "\n\nFiles Content:\n------------------------------------------------\n" + assembledContent
+
+    ingestRes.data.content = finalFullContent
+    ingestRes.data.fullContent = finalFullContent
+
+    // 冻结深度响应式
+    ingestRes.data.directoryTree = markRaw(ingestRes.data.directoryTree)
+
+    ingestRes.data.fullFileCount = ingestRes.data.fileCount
+    ingestRes.data.fullEstimatedTokens = ingestRes.data.estimatedTokens
+    ingestRes.data.fullFormattedSize = ingestRes.data.formattedSize
+
     resultData.value = ingestRes.data
 
-    // 【核心改动】：缓存全库的完整统计数据，方便后续“恢复”
-    resultData.value.fullContent = ingestRes.data.content
-    resultData.value.fullFileCount = ingestRes.data.fileCount
-    resultData.value.fullEstimatedTokens = ingestRes.data.estimatedTokens
-    resultData.value.fullFormattedSize = ingestRes.data.formattedSize
-
-    facadeTreeData.value = facadeRes.data.map(item => ({
+    facadeTreeData.value = markRaw(facadeRes.data.map((item: FacadeInfo) => ({
       label: item.className,
       path: item.path,
       isFile: false,
       children: item.methods.map(method => ({ label: method, path: item.path, parentClass: item.className, isFile: true }))
-    }))
+    })))
 
     ElMessage.success(`提取成功！共 ${ingestRes.data.fileCount} 个文件`)
   } catch (error) {
-    ElMessage.error('提取失败')
+    ElMessage.error('提取失败，请检查路径或权限')
   } finally {
     loading.value = false
   }
@@ -233,11 +271,10 @@ const handleAssembleSelected = () => {
 
   const finalString = treeText + contentText
 
-  // 【核心改动】：动态计算选中后的 Token、大小、文件数并刷新面板
   resultData.value.content = finalString
   resultData.value.fileCount = selectedFiles.length
-  resultData.value.estimatedTokens = Math.floor(finalString.length / 4) // 大致估算：4个字符1个Token
-  resultData.value.formattedSize = formatSize(new Blob([finalString]).size) // 精准计算UTF-8字节大小
+  resultData.value.estimatedTokens = Math.floor(finalString.length / 4)
+  resultData.value.formattedSize = formatSize(new Blob([finalString]).size)
 
   currentViewTitle.value = `组装完毕: 完整大纲 + ${selectedFiles.length} 个文件代码`
   ElMessage.success(`成功组装！共抽取了 ${selectedFiles.length} 个核心文件`)
@@ -262,14 +299,13 @@ const handleFacadeTreeClick = (node: any) => {
   if (content) {
     const finalString = `================================================\nFile: ${node.path}\n================================================\n${content}\n`
 
-    // 【核心改动】：单点文件时，也将统计面板更新为单文件的属性
     resultData.value.content = finalString
     resultData.value.fileCount = 1
     resultData.value.estimatedTokens = Math.floor(finalString.length / 4)
     resultData.value.formattedSize = formatSize(new Blob([finalString]).size)
 
     const displayName = node.parentClass ? node.parentClass : node.label
-    currentViewTitle.value = `查看接口源码: ${displayName}`
+    currentViewTitle.value = `查看源码: ${displayName}`
   } else {
     ElMessage.warning('未在目录树中提取到该源码 (可能已被过滤)')
   }
@@ -277,7 +313,6 @@ const handleFacadeTreeClick = (node: any) => {
 
 const resetView = () => {
   if (resultData.value && resultData.value.fullContent) {
-    // 【核心改动】：把之前缓存的“全库属性”完璧归赵
     resultData.value.content = resultData.value.fullContent
     resultData.value.fileCount = resultData.value.fullFileCount!
     resultData.value.estimatedTokens = resultData.value.fullEstimatedTokens!
@@ -326,7 +361,10 @@ const handleDownload = () => {
   const link = document.createElement('a')
   link.href = url
 
-  const safeProjectName = searchInput.value.replace(/[\\/:*?"<>|]/g, '_')
+  // 【适配本地文件名】：动态获取工程名，防止跨盘符路径导致无法生成文件
+  const baseName = fetchMode.value === 'gitlab' ? searchInput.value : (localPathInput.value.split('\\').pop() || 'local_project')
+  const safeProjectName = baseName.replace(/[\\/:*?"<>|]/g, '_')
+
   link.download = `${safeProjectName}_gingest${checkedNodes.length > 0 ? '_selected' : '_full'}.txt`
 
   document.body.appendChild(link)
@@ -338,12 +376,11 @@ const handleDownload = () => {
 const handleCopy = async () => {
   if (!resultData.value || !resultData.value.content) return
 
-  // 【新增强制限制】：如果内容因为过大被截断展示，严禁复制到剪贴板
   if (isContentTruncated.value) {
     ElMessage({
       message: '内容过大！为确保浏览器稳定和数据完整性，暂不允许直接复制。请点击右侧【下载完整 TXT】获取全量内容。',
       type: 'error',
-      duration: 5000, // 提示停留久一点，确保用户看清
+      duration: 5000,
       showClose: true
     })
     return
@@ -365,18 +402,36 @@ const handleCopy = async () => {
       <el-header class="header">
         <h2>Gingest 代码提取器</h2>
         <div class="operation-bar">
-          <el-select v-model="searchInput" placeholder="搜索或选择项目" class="project-select" filterable allow-create clearable :loading="loadingProjects" @visible-change="handleFetchProjects" @change="handleFetchBranches">
-            <el-option v-for="proj in projectList" :key="proj" :label="proj" :value="proj" />
-          </el-select>
-          <el-button :icon="Connection" :loading="loadingBranches" @click="handleFetchBranches" title="手动刷新分支">获取分支</el-button>
-          <el-select v-model="selectedBranch" placeholder="请选择分支" class="branch-select" :disabled="branchList.length === 0" filterable>
-            <el-option v-for="branch in branchList" :key="branch" :label="branch" :value="branch" />
-          </el-select>
+
+          <el-radio-group v-model="fetchMode" size="default" class="mode-switch">
+            <el-radio-button label="gitlab">GitLab</el-radio-button>
+            <el-radio-button label="local">本地磁盘</el-radio-button>
+          </el-radio-group>
+
+          <template v-if="fetchMode === 'gitlab'">
+            <el-select v-model="searchInput" placeholder="搜索或选择项目" class="project-select" filterable allow-create clearable :loading="loadingProjects" @visible-change="handleFetchProjects" @change="handleFetchBranches">
+              <el-option v-for="proj in projectList" :key="proj" :label="proj" :value="proj" />
+            </el-select>
+            <el-button :icon="Connection" :loading="loadingBranches" @click="handleFetchBranches" title="手动刷新分支">获取分支</el-button>
+            <el-select v-model="selectedBranch" placeholder="请选择分支" class="branch-select" :disabled="branchList.length === 0" filterable>
+              <el-option v-for="branch in branchList" :key="branch" :label="branch" :value="branch" />
+            </el-select>
+          </template>
+
+          <template v-else>
+            <el-input
+              v-model="localPathInput"
+              placeholder="请输入本地绝对路径，例如 D:\work\zoe-outp-order-service"
+              clearable
+              class="local-input"
+            />
+          </template>
+
           <el-button type="primary" :loading="loading" @click="handleIngest">开始提取</el-button>
         </div>
       </el-header>
 
-      <el-main class="main-content" v-loading="loading" element-loading-text="正在狂奔向 GitLab 拉取代码...">
+      <el-main class="main-content" v-loading="loading" :element-loading-text="fetchMode === 'gitlab' ? '正在狂奔向 GitLab 拉取代码...' : '正在极速扫描本地磁盘...'">
         <div class="top-section" v-if="resultData" :style="{ height: topHeight + 'px' }">
           <el-row :gutter="15" class="h-100">
 
@@ -437,7 +492,7 @@ const handleCopy = async () => {
                   :props="treeProps"
                   :filter-node-method="filterNode"
                   @node-click="handleFacadeTreeClick"
-                  empty-text="未扫描到 Facade 接口"
+                  :empty-text="fetchMode === 'local' ? '本地模式暂不解析 Facade 接口' : '未扫描到 Facade 接口'"
                   class="facade-tree"
                 />
               </el-card>
@@ -483,7 +538,7 @@ const handleCopy = async () => {
             </div>
           </template>
           <el-card v-else class="empty-card" shadow="never">
-            <div class="empty-text">请选择项目 -> 确认分支 -> 开始提取...</div>
+            <div class="empty-text">请在上方配置提取源 -> 开始提取...</div>
           </el-card>
         </div>
 
@@ -498,8 +553,13 @@ const handleCopy = async () => {
 .header { background-color: #24292f; color: white; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
 .header h2 { margin: 0; font-size: 20px; }
 .operation-bar { display: flex; align-items: center; gap: 12px; }
-.project-select { width: 400px; }
-.branch-select { width: 180px; }
+
+/* 控件宽度调整 */
+.mode-switch { margin-right: 8px; }
+.project-select { width: 350px; }
+.branch-select { width: 140px; }
+.local-input { width: 500px; } /* 本地路径通常较长，给大一点空间 */
+
 .main-content { padding: 20px; display: flex; flex-direction: column; height: calc(100vh - 60px); box-sizing: border-box; overflow: hidden; }
 
 .panel-header-with-search { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; height: 24px; }
