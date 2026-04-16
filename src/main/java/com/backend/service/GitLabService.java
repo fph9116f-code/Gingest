@@ -25,7 +25,8 @@ public class GitLabService {
     private final GitLabApi gitLabApi;
 
     // 常见需要过滤的二进制文件或无意义文件的后缀/目录
-    private static final Set<String> IGNORE_EXTENSIONS = Set.of(".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz", ".jar", ".class", ".exe", ".xml");
+    private static final Set<String> IGNORE_EXTENSIONS = Set.of(".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz", ".jar",
+            ".class", ".exe", ".xml",".svg",".properties",".md",".cmd",".gitignore",".config",".yml");
     private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules/", ".git/", "target/", ".idea/", "build/");
 
     /**
