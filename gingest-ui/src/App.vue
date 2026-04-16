@@ -30,10 +30,20 @@ interface TreeNode {
   fullPath?: string
   content?: string
   children?: TreeNode[]
+  path?: string
+  parentClass?: string
+}
+
+interface HelperNode {
+  label: string
+  isFile: boolean
+  fullPath?: string
+  content?: string
+  childMap: Record<string, HelperNode>
+  children?: HelperNode[]
 }
 
 const fetchMode = ref<'gitlab' | 'local'>('gitlab')
-// 记录本地模式下选择的文件夹名称，用于下载时的文件名
 const localPathInput = ref<string>('')
 
 const searchInput = ref<string>('')
@@ -72,10 +82,10 @@ const treeProps = {
   label: 'label',
 }
 
-watch(filterDirText, (val) => { dirTreeRef.value!.filter(val) })
-watch(filterText, (val) => { treeRef.value!.filter(val) })
+watch(filterDirText, (val) => { dirTreeRef.value?.filter(val) })
+watch(filterText, (val) => { treeRef.value?.filter(val) })
 
-const filterNode = (value: string, data: any) => {
+const filterNode = (value: string, data: TreeNode) => {
   if (!value) return true
   return data.label?.toLowerCase().includes(value.toLowerCase())
 }
@@ -152,7 +162,7 @@ const handleFetchBranches = async () => {
 }
 
 // ==========================================
-// 【黑科技核心】：纯前端浏览器直读 API 实现
+// 【黑科技核心】：双引擎本地文件读取系统 (纯净 TS 版)
 // ==========================================
 const IGNORE_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz',
@@ -166,16 +176,16 @@ const IGNORE_FILE_NAMES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.
 const MAX_FILE_COUNT = 3000
 const MAX_TOTAL_SIZE = 50 * 1024 * 1024 // 50MB
 
-// 前端复刻的树形构建算法
 const buildLocalTree = (paths: string[], contentMap: Record<string, string>): TreeNode[] => {
   if (!paths || paths.length === 0) return []
-  const root: any = { label: 'root', childMap: {} }
+
+  const root: HelperNode = { label: 'root', isFile: false, childMap: {} }
 
   for (const path of paths) {
     const parts = path.split('/')
     let current = root
     for (let i = 0; i < parts.length; i++) {
-      const part = parts[i]
+      const part = parts[i]!
       if (!current.childMap[part]) {
         current.childMap[part] = { label: part, isFile: false, childMap: {} }
       }
@@ -188,12 +198,12 @@ const buildLocalTree = (paths: string[], contentMap: Record<string, string>): Tr
     }
   }
 
-  const compressTree = (node: any) => {
+  const compressTree = (node: HelperNode) => {
     const children = Object.values(node.childMap)
     for (const child of children) compressTree(child)
 
     if (node.label !== 'root' && !node.isFile && Object.keys(node.childMap).length === 1) {
-      const singleChild: any = Object.values(node.childMap)[0]
+      const singleChild = Object.values(node.childMap)[0]!
       node.label = node.label + '/' + singleChild.label
       node.childMap = singleChild.childMap
       node.isFile = singleChild.isFile
@@ -202,27 +212,27 @@ const buildLocalTree = (paths: string[], contentMap: Record<string, string>): Tr
     }
   }
 
-  const convertMapToList = (node: any) => {
-    node.children = Object.values(node.childMap)
-    for (const child of node.children) convertMapToList(child)
-    delete node.childMap
+  const convertMapToList = (node: HelperNode): TreeNode => {
+    const childrenList = Object.values(node.childMap).map(convertMapToList)
+    return {
+      label: node.label,
+      isFile: node.isFile,
+      fullPath: node.fullPath,
+      content: node.content,
+      children: childrenList.length > 0 ? childrenList : undefined
+    }
   }
 
   compressTree(root)
-  convertMapToList(root)
-  return root.children
+  return Object.values(root.childMap).map(convertMapToList)
 }
 
-const processLocalDirectory = async (): Promise<GingestResponse> => {
-  // 唤起系统文件夹选择器
+const processLocalDirectoryModern = async (): Promise<GingestResponse> => {
   const dirHandle = await (window as any).showDirectoryPicker()
-  localPathInput.value = dirHandle.name // 更新记录
+  localPathInput.value = dirHandle.name
 
-  let fileCount = 0
-  let totalTextLength = 0
-  let byteSize = 0
-  const processedFiles: string[] = []
-  const fileContents: Record<string, string> = {}
+  let fileCount = 0; let totalTextLength = 0; let byteSize = 0;
+  const processedFiles: string[] = []; const fileContents: Record<string, string> = {}
 
   const traverse = async (handle: any, currentPath: string) => {
     for await (const entry of handle.values()) {
@@ -230,58 +240,115 @@ const processLocalDirectory = async (): Promise<GingestResponse> => {
         if (entry.name.startsWith('.') || IGNORE_DIRECTORIES.has(entry.name.toLowerCase())) continue
         await traverse(entry, currentPath + entry.name + '/')
       } else if (entry.kind === 'file') {
-        const fileName = entry.name
-        const lowerName = fileName.toLowerCase()
-
+        const fileName = entry.name; const lowerName = fileName.toLowerCase()
         if (IGNORE_FILE_NAMES.has(lowerName)) continue
-
         let isIgnoredExt = false
-        for (const ext of IGNORE_EXTENSIONS) {
-          if (lowerName.endsWith(ext)) {
-            isIgnoredExt = true
-            break
-          }
-        }
+        for (const ext of IGNORE_EXTENSIONS) { if (lowerName.endsWith(ext)) { isIgnoredExt = true; break } }
         if (isIgnoredExt) continue
 
-        if (fileCount >= MAX_FILE_COUNT) {
-          throw new Error(`【安全熔断】该目录过大！有效代码文件已超过 ${MAX_FILE_COUNT} 个，为保护浏览器内存已强制拦截。请指定更精确的子目录！`)
-        }
-        if (byteSize >= MAX_TOTAL_SIZE) {
-          throw new Error(`【安全熔断】该目录过大！累计读取源码已超过 50MB，为保护浏览器内存已强制拦截。请指定更精确的子目录！`)
-        }
+        if (fileCount >= MAX_FILE_COUNT) throw new Error(`【安全熔断】该目录过大！代码文件已超过 ${MAX_FILE_COUNT} 个。`)
+        if (byteSize >= MAX_TOTAL_SIZE) throw new Error(`【安全熔断】该目录过大！源码体积已超过 50MB。`)
 
         const file = await entry.getFile()
         const relativePath = currentPath + fileName
         processedFiles.push(relativePath)
 
         let content = ''
-        // 500KB 巨无霸文件熔断机制
         if (file.size > 500 * 1024) {
-          content = `// 【Gingest 拦截提示】：该文件体积过大 (${formatSize(file.size)})。为了防止爆内存及大模型 Token 浪费，其正文已被系统自动忽略。`
+          content = `// 【Gingest 拦截提示】：文件过大 (${formatSize(file.size)})，已忽略正文。`
         } else {
           content = await file.text()
         }
-
         fileContents[relativePath] = content
-        totalTextLength += content.length
-        byteSize += file.size
-        fileCount++
+        totalTextLength += content.length; byteSize += file.size; fileCount++
       }
     }
   }
 
   await traverse(dirHandle, '')
-
   return {
     projectName: 'Local: ' + dirHandle.name,
-    fileCount,
-    estimatedTokens: Math.floor(totalTextLength / 4),
+    fileCount, estimatedTokens: Math.floor(totalTextLength / 4),
     formattedSize: formatSize(byteSize),
-    directoryTree: buildLocalTree(processedFiles, fileContents),
-    content: ''
+    directoryTree: buildLocalTree(processedFiles, fileContents), content: ''
   }
 }
+
+const processLocalDirectoryLegacy = (): Promise<GingestResponse> => {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    ;(input as any).webkitdirectory = true
+    input.multiple = true
+    input.style.display = 'none'
+
+    input.onchange = async (e: Event) => {
+      const target = e.target as HTMLInputElement
+      const files = target.files
+      if (!files || files.length === 0) return reject(new Error('AbortError'))
+
+      loading.value = true
+      try {
+        let fileCount = 0; let totalTextLength = 0; let byteSize = 0;
+        const processedFiles: string[] = []; const fileContents: Record<string, string> = {}
+
+        const firstFile = files[0]! as any
+        const baseDirName = firstFile.webkitRelativePath ? firstFile.webkitRelativePath.split('/')[0] : 'Local_Project'
+        localPathInput.value = baseDirName
+
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i]!
+          const webkitRelativePath = (file as any).webkitRelativePath || file.name
+          const pathParts = webkitRelativePath.split('/')
+
+          let isIgnoredDir = false
+          for (const part of pathParts.slice(0, -1)) {
+            if (part.startsWith('.') || IGNORE_DIRECTORIES.has(part.toLowerCase())) {
+              isIgnoredDir = true; break
+            }
+          }
+          if (isIgnoredDir) continue
+
+          const fileName = file.name; const lowerName = fileName.toLowerCase()
+          if (IGNORE_FILE_NAMES.has(lowerName)) continue
+          let isIgnoredExt = false
+          for (const ext of IGNORE_EXTENSIONS) { if (lowerName.endsWith(ext)) { isIgnoredExt = true; break } }
+          if (isIgnoredExt) continue
+
+          if (fileCount >= MAX_FILE_COUNT) throw new Error(`【安全熔断】该目录过大！代码文件已超过 ${MAX_FILE_COUNT} 个。`)
+          if (byteSize >= MAX_TOTAL_SIZE) throw new Error(`【安全熔断】该目录过大！源码体积已超过 50MB。`)
+
+          const relativePath = pathParts.slice(1).join('/')
+          if (!relativePath) continue
+
+          processedFiles.push(relativePath)
+          let content = ''
+          if (file.size > 500 * 1024) {
+            content = `// 【Gingest 拦截提示】：文件过大 (${formatSize(file.size)})，已忽略正文。`
+          } else {
+            content = await file.text()
+          }
+          fileContents[relativePath] = content
+          totalTextLength += content.length; byteSize += file.size; fileCount++
+        }
+
+        resolve({
+          projectName: 'Local: ' + baseDirName,
+          fileCount, estimatedTokens: Math.floor(totalTextLength / 4),
+          formattedSize: formatSize(byteSize),
+          directoryTree: buildLocalTree(processedFiles, fileContents), content: ''
+        })
+      } catch (err) {
+        reject(err)
+      }
+    }
+
+    document.body.appendChild(input)
+    input.click()
+    document.body.removeChild(input)
+  })
+}
+
 
 // ==========================================
 // 主提交流程
@@ -289,7 +356,10 @@ const processLocalDirectory = async (): Promise<GingestResponse> => {
 const handleIngest = async () => {
   if (fetchMode.value === 'gitlab' && !searchInput.value) return ElMessage.warning('请选择项目')
 
-  loading.value = true
+  if (fetchMode.value === 'gitlab') {
+    loading.value = true
+  }
+
   facadeTreeData.value = []
   filterText.value = ''
   filterDirText.value = ''
@@ -297,32 +367,32 @@ const handleIngest = async () => {
   resultData.value = null
 
   try {
-    let ingestRes: any = { data: {} }
-    let facadeRes: any = { data: [] }
+    let ingestRes: { data: GingestResponse } = { data: {} as GingestResponse }
+    let facadeRes: { data: FacadeInfo[] } = { data: [] }
 
     if (fetchMode.value === 'gitlab') {
       const axiosConfig = { timeout: 120000 }
       const [res1, res2] = await Promise.all([
         axios.get<GingestResponse>('/api/ingest', { params: { projectId: searchInput.value, branch: selectedBranch.value }, ...axiosConfig }),
-        axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value }, ...axiosConfig }).catch(() => ({ data: [] }))
+        axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value }, ...axiosConfig }).catch(() => ({ data: [] as FacadeInfo[] }))
       ])
       ingestRes = res1
       facadeRes = res2
     } else {
-      // 本地模式拦截与调用
-      if (!('showDirectoryPicker' in window)) {
-        loading.value = false
-        return ElMessage.error('您的浏览器不支持直读本地目录，请使用最新版 Chrome 或 Edge 浏览器！')
-      }
       try {
-        const localData = await processLocalDirectory()
-        ingestRes.data = localData
-      } catch (err: any) {
-        if (err.name === 'AbortError') {
-          loading.value = false
-          return // 用户取消了弹窗，静默退出
+        if ('showDirectoryPicker' in window) {
+          const localData = await processLocalDirectoryModern()
+          ingestRes.data = localData
+        } else {
+          const localData = await processLocalDirectoryLegacy()
+          ingestRes.data = localData
         }
-        throw err // 把熔断异常抛给最外层 catch
+      } catch (err: any) {
+        if (err.name === 'AbortError' || err.message === 'AbortError') {
+          loading.value = false
+          return
+        }
+        throw err
       }
     }
 
@@ -380,7 +450,6 @@ const handleIngest = async () => {
 
     ElMessage.success(`提取成功！共 ${ingestRes.data.fileCount} 个文件`)
   } catch (error: any) {
-    // 智能报错：兼容 Axios 网络报错 与 纯前端直读的 Error 报错
     let errorMsg = '提取失败，请检查路径或网络连接'
     if (error.response?.data?.message || error.response?.data?.error) {
       errorMsg = error.response.data.message || error.response.data.error
@@ -392,9 +461,6 @@ const handleIngest = async () => {
     loading.value = false
   }
 }
-
-// ... 下方的 generateTreeText, handleAssembleSelected, findContentByPath,
-// handleFacadeTreeClick, resetView, handleDownload, handleCopy 保持原样不变 ...
 
 const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
   let text = ''
@@ -413,7 +479,7 @@ const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
 const handleAssembleSelected = () => {
   if (!resultData.value || !dirTreeRef.value) return
 
-  const checkedNodes = dirTreeRef.value.getCheckedNodes()
+  const checkedNodes = dirTreeRef.value.getCheckedNodes() as TreeNode[]
   const selectedFiles = checkedNodes.filter(node => node.isFile)
 
   if (selectedFiles.length === 0) {
@@ -451,7 +517,7 @@ const findContentByPath = (nodes: TreeNode[], targetPath: string): string | null
   return null
 }
 
-const handleFacadeTreeClick = (node: any) => {
+const handleFacadeTreeClick = (node: TreeNode) => {
   if (!resultData.value || !node.path) return
   const content = findContentByPath(resultData.value.directoryTree, node.path)
 
@@ -487,7 +553,8 @@ const resetView = () => {
 const handleDownload = () => {
   if (!resultData.value) return
   let downloadContent = ''
-  const checkedNodes = dirTreeRef.value ? dirTreeRef.value.getCheckedNodes().filter(n => n.isFile) : []
+
+  const checkedNodes = dirTreeRef.value ? (dirTreeRef.value.getCheckedNodes() as TreeNode[]).filter(n => n.isFile) : []
 
   if (checkedNodes.length > 0) {
     const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
@@ -583,7 +650,7 @@ const handleCopy = async () => {
         </div>
       </el-header>
 
-      <el-main class="main-content" v-loading="loading" :element-loading-text="fetchMode === 'gitlab' ? '正在狂奔向 GitLab 拉取代码...' : '正在唤起系统资源管理器...'">
+      <el-main class="main-content" v-loading="loading" :element-loading-text="fetchMode === 'gitlab' ? '正在狂奔向 GitLab 拉取代码...' : '正在极速处理本地文件...' ">
         <div class="top-section" v-if="resultData" :style="{ height: topHeight + 'px' }">
           <el-row :gutter="15" class="h-100">
 
