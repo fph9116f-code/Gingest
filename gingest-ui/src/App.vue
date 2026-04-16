@@ -85,7 +85,7 @@ const treeProps = {
 watch(filterDirText, (val) => { dirTreeRef.value?.filter(val) })
 watch(filterText, (val) => { treeRef.value?.filter(val) })
 
-const filterNode = (value: string, data: TreeNode) => {
+const filterNode = (value: string, data: any) => {
   if (!value) return true
   return data.label?.toLowerCase().includes(value.toLowerCase())
 }
