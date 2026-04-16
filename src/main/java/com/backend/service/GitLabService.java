@@ -31,9 +31,14 @@ public class GitLabService {
     private static final Set<String> IGNORE_EXTENSIONS = Set.of(
             ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz",
             ".jar", ".class", ".exe", ".xml", ".node", ".dll", ".so", ".dylib",
-            ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".svg", ".properties", ".cmd", ".gitignore", ".config",".iml"
+            ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".svg", ".properties",
+            ".cmd", ".gitignore", ".config", ".iml",
+            ".map", ".sql", ".bak", ".log", ".out", ".min.js", ".min.css" // 👈 新增
     );
     private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules", ".git", "target", ".idea", "build");
+    private static final Set<String> IGNORE_FILE_NAMES = Set.of(
+            "package-lock.json", "yarn.lock", "pnpm-lock.yaml"
+    );
 
     /**
      * 拉取代码并生成包含动态树形结构的响应
@@ -45,11 +50,13 @@ public class GitLabService {
         log.info("开始极速拉取并解析 GitLab 仓库: {}, 目标分支: {}", projectIdOrPath, targetBranch != null ? targetBranch : "默认主分支");
         long startTime = System.currentTimeMillis();
 
-        StringBuilder contentBuilder = new StringBuilder();
         List<String> processedFiles = new ArrayList<>();
-        // 【新增】：在内存中暂存每个文件的代码，用于挂载到目录树上
         Map<String, String> fileContents = new HashMap<>();
         int fileCount = 0;
+
+        // 【极致优化】：彻底干掉 contentBuilder，不再拼装 10MB+ 的冗余长文本
+        long totalTextLength = 0;
+        long byteSize = 0;
 
         try {
             InputStream archiveStream = gitLabApi.getRepositoryApi()
@@ -64,13 +71,22 @@ public class GitLabService {
                         String cleanPath = cleanRootPath(fileName);
                         processedFiles.add(cleanPath);
 
-                        String fileContent = new String(zipIn.readAllBytes(), StandardCharsets.UTF_8);
+                        byte[] fileBytes = zipIn.readAllBytes();
+                        String fileContent;
+
+                        // 【核心改动：单文件熔断保护】
+                        // 如果单文件超过 500KB (512,000 bytes)，大概率是机器生成的产物或超大数据字典
+                        if (fileBytes.length > 500 * 1024) {
+                            fileContent = "// 【Gingest 拦截提示】：该文件体积过大 (" + formatSize(fileBytes.length) + ")。为了防止爆内存及大模型 Token 浪费，其正文已被系统自动忽略。";
+                            log.warn("已跳过超大文件: {} ({})", cleanPath, formatSize(fileBytes.length));
+                        } else {
+                            fileContent = new String(fileBytes, StandardCharsets.UTF_8);
+                        }
+
                         fileContents.put(cleanPath, fileContent);
 
-                        contentBuilder.append("================================================\n");
-                        contentBuilder.append("File: ").append(cleanPath).append("\n");
-                        contentBuilder.append("================================================\n");
-                        contentBuilder.append(fileContent).append("\n\n");
+                        totalTextLength += fileContent.length();
+                        byteSize += fileBytes.length;
 
                         fileCount++;
                     }
@@ -78,9 +94,7 @@ public class GitLabService {
                 }
             }
 
-            String finalContent = contentBuilder.toString();
-            long estimatedTokens = finalContent.length() / 4;
-            long byteSize = finalContent.getBytes(StandardCharsets.UTF_8).length;
+            long estimatedTokens = totalTextLength / 4;
 
             log.info("解析完成！共处理 {} 个有效文件，预估 {} tokens，耗时 {} ms",
                     fileCount, estimatedTokens, (System.currentTimeMillis() - startTime));
@@ -90,9 +104,9 @@ public class GitLabService {
                     .fileCount(fileCount)
                     .estimatedTokens(estimatedTokens)
                     .formattedSize(formatSize(byteSize))
-                    // 【核心改动】：传入内容 Map，构建带有真实代码的 JSON 目录树
                     .directoryTree(buildDirectoryTree(processedFiles, fileContents))
-                    .content(finalContent)
+                    // 【极致优化】：强行置空，绝不传输双份数据！体积直接缩减 50%
+                    .content("")
                     .build();
 
         } catch (Exception e) {
@@ -101,8 +115,7 @@ public class GitLabService {
         }
     }
 
-    // 在 GitLabService.java 中修改 TreeNode
-    @Data // 必须加上，否则 Jackson 无法把字段转为 JSON
+    @Data
     @NoArgsConstructor
     @AllArgsConstructor
     public static class TreeNode {
@@ -112,7 +125,6 @@ public class GitLabService {
         public String content;
         public List<TreeNode> children = new ArrayList<>();
 
-        // 内部辅助使用，不序列化
         private transient Map<String, TreeNode> childMap = new TreeMap<>();
 
         public TreeNode(String label) {
@@ -136,7 +148,7 @@ public class GitLabService {
                 if (i == parts.length - 1) {
                     current.isFile = true;
                     current.fullPath = path;
-                    current.content = contentMap.get(path); // 把代码塞进树叶里
+                    current.content = contentMap.get(path);
                 }
             }
         }
@@ -166,10 +178,6 @@ public class GitLabService {
         }
     }
 
-    // ==========================================
-    // 保留的其他辅助方法与极速 Facade 提取
-    // ==========================================
-
     private String cleanRootPath(String originalPath) {
         int firstSlash = originalPath.indexOf("/");
         return firstSlash != -1 ? originalPath.substring(firstSlash + 1) : originalPath;
@@ -178,22 +186,25 @@ public class GitLabService {
     private boolean isTextFile(String fileName) {
         String lowerCaseName = fileName.toLowerCase();
 
-        // 1. 更严谨的目录过滤方式：将路径切分，逐层判断是否在黑名单中
-        // 比如路径是 "web/node_modules/vue/app.js"，切分后得到 ["web", "node_modules", "vue", "app.js"]
         String[] pathParts = lowerCaseName.split("/");
         for (String part : pathParts) {
-            // 只要路径中的任意一层文件夹（或文件名）等于黑名单中的名字，或者是隐藏文件(以.开头)，直接过滤
             if (part.startsWith(".") || IGNORE_DIRECTORIES.contains(part)) {
                 return false;
             }
         }
 
-        // 2. 后缀过滤保持不变
         for (String ext : IGNORE_EXTENSIONS) {
             if (lowerCaseName.endsWith(ext)) {
                 return false;
             }
         }
+
+        // 【新增】：精准拦截 package-lock.json 等特定文件
+        String pureFileName = pathParts[pathParts.length - 1];
+        if (IGNORE_FILE_NAMES.contains(pureFileName)) {
+            return false;
+        }
+
         return true;
     }
 
@@ -255,14 +266,11 @@ public class GitLabService {
 
     public List<String> getAllAccessibleProjects() {
         try {
-            // 【性能提速魔法】：开启 simple 模式，按最近更新排序，极速拉取！
             ProjectFilter filter = new ProjectFilter()
                     .withMembership(true)
-                    .withSimple(true) // 核心：告诉 GitLab 不要计算存储大小、不要拉取 README，毫秒级返回！
+                    .withSimple(true)
                     .withOrderBy(org.gitlab4j.api.Constants.ProjectOrderBy.UPDATED_AT);
-            // 删除了 .withSort() 规避版本差异，GitLab 默认按 updated_at 就是降序！
 
-            // 直接限制只拉取第 1 页，最多取前 200 个最近活跃的项目
             return gitLabApi.getProjectApi().getProjects(filter, 1, 200).stream()
                     .map(org.gitlab4j.api.models.Project::getPathWithNamespace)
                     .collect(java.util.stream.Collectors.toList());

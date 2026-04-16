@@ -19,7 +19,9 @@ public class LocalFileService {
     private static final Set<String> IGNORE_EXTENSIONS = Set.of(
             ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz",
             ".jar", ".class", ".exe", ".xml", ".node", ".dll", ".so", ".dylib",
-            ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".svg", ".properties", ".cmd", ".gitignore", ".config",".iml"
+            ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".svg", ".properties",
+            ".cmd", ".gitignore", ".config", ".iml",
+            ".map", ".sql", ".bak", ".log", ".out", ".min.js", ".min.css"
     );
     private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules", ".git", "target", ".idea", "build");
 

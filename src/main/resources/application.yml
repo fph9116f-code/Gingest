@@ -1,5 +1,9 @@
 server:
   port: 31020
+  compression:
+    enabled: true  # 开启全局响应压缩
+    mime-types: application/json,text/plain,text/html,text/xml,application/javascript,text/css # 指定对 JSON 和 TXT 进行压缩
+    min-response-size: 2048 # 只有当返回值大于 2KB 时才进行压缩，节省 CPU
 
 spring:
   application:
@@ -11,4 +15,5 @@ spring:
 # 自定义 GitLab 配置
 gitlab:
   url: "http://192.168.4.166/"
-  token: "glpat-PYKvrAimR3bCtv3sviXX"
+#  token: "glpat-PYKvrAimR3bCtv3sviXX"
+  token: "glpat-qZp5xc1goi8-XEqvK4gV"

@@ -32,9 +32,6 @@ interface TreeNode {
   children?: TreeNode[]
 }
 
-// ==========================================
-// 【新增】：模式切换状态
-// ==========================================
 const fetchMode = ref<'gitlab' | 'local'>('gitlab')
 const localPathInput = ref<string>('')
 
@@ -153,9 +150,6 @@ const handleFetchBranches = async () => {
   }
 }
 
-// ==========================================
-// 【重构】：支持双模式路由请求
-// ==========================================
 const handleIngest = async () => {
   if (fetchMode.value === 'gitlab' && !searchInput.value) return ElMessage.warning('请选择项目')
   if (fetchMode.value === 'local' && !localPathInput.value) return ElMessage.warning('请输入本地目录绝对路径')
@@ -165,13 +159,12 @@ const handleIngest = async () => {
   filterText.value = ''
   filterDirText.value = ''
   currentViewTitle.value = '全部提取结果 (All Files)'
-  resultData.value = null // 清理内存
+  resultData.value = null
 
   try {
     let ingestRes: any;
     let facadeRes: any = { data: [] };
 
-    // 根据所选模式分发 API 请求
     if (fetchMode.value === 'gitlab') {
       const [res1, res2] = await Promise.all([
         axios.get<GingestResponse>('/api/ingest', { params: { projectId: searchInput.value, branch: selectedBranch.value } }),
@@ -180,7 +173,6 @@ const handleIngest = async () => {
       ingestRes = res1;
       facadeRes = res2;
     } else {
-      // 本地模式极速读取
       ingestRes = await axios.get<GingestResponse>('/api/ingest/local', { params: { localPath: localPathInput.value } })
     }
 
@@ -193,7 +185,6 @@ const handleIngest = async () => {
     }
     assignIds(ingestRes.data.directoryTree)
 
-    // 前端组装全量纯文本，释放后端传输压力
     let assembledContent = ''
     const gatherAll = (nodes: TreeNode[]) => {
       nodes.forEach(n => {
@@ -212,14 +203,12 @@ const handleIngest = async () => {
     ingestRes.data.content = finalFullContent
     ingestRes.data.fullContent = finalFullContent
 
-    // 冻结深度响应式
-    ingestRes.data.directoryTree = markRaw(ingestRes.data.directoryTree)
-
     ingestRes.data.fullFileCount = ingestRes.data.fileCount
     ingestRes.data.fullEstimatedTokens = ingestRes.data.estimatedTokens
     ingestRes.data.fullFormattedSize = ingestRes.data.formattedSize
 
-    resultData.value = ingestRes.data
+    // 【极致防卡死】：用 markRaw 将整个根对象彻底冻结，严禁 Vue 解析 16MB+ 文本进行响应式劫持！
+    resultData.value = markRaw(ingestRes.data)
 
     facadeTreeData.value = markRaw(facadeRes.data.map((item: FacadeInfo) => ({
       label: item.className,
@@ -230,11 +219,10 @@ const handleIngest = async () => {
 
     ElMessage.success(`提取成功！共 ${ingestRes.data.fileCount} 个文件`)
   } catch (error: any) {
-    // 【修改】：尝试获取后端返回的真实报错信息，如果没有再使用默认提示
     const errorMsg = error.response?.data?.message || error.response?.data?.error || '提取失败，请检查路径或权限';
     ElMessage.error({
       message: errorMsg,
-      duration: 5000, // 报错停留时间长一点，方便用户阅读
+      duration: 5000,
       showClose: true
     });
   } finally {
@@ -286,7 +274,6 @@ const handleAssembleSelected = () => {
   ElMessage.success(`成功组装！共抽取了 ${selectedFiles.length} 个核心文件`)
 }
 
-
 const findContentByPath = (nodes: TreeNode[], targetPath: string): string | null => {
   for (const n of nodes) {
     if (n.isFile && n.fullPath === targetPath) return n.content || null
@@ -330,13 +317,13 @@ const resetView = () => {
     }
   }
 }
+
 const handleDownload = () => {
   if (!resultData.value) return
   let downloadContent = ''
   const checkedNodes = dirTreeRef.value ? dirTreeRef.value.getCheckedNodes().filter(n => n.isFile) : []
 
   if (checkedNodes.length > 0) {
-    // 【场景 1：下载勾选的部分文件】
     const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
       + generateTreeText(resultData.value.directoryTree)
 
@@ -351,8 +338,6 @@ const handleDownload = () => {
 
     ElMessage.success(`正在下载选中的 ${checkedNodes.length} 个核心文件...`)
   } else {
-    // 【场景 2：下载全量文件】
-    // 修复 Bug：fullContent 中已经包含了完美的树形结构和代码，不需要再额外拼接 treeText 了！
     downloadContent = `Project: ${resultData.value.projectName}\n` +
       `Export Type: Full Repository (${resultData.value.fullFileCount} files)\n\n` +
       resultData.value.fullContent
@@ -561,7 +546,7 @@ const handleCopy = async () => {
 .mode-switch { margin-right: 8px; }
 .project-select { width: 350px; }
 .branch-select { width: 140px; }
-.local-input { width: 500px; } /* 本地路径通常较长，给大一点空间 */
+.local-input { width: 500px; }
 
 .main-content { padding: 20px; display: flex; flex-direction: column; height: calc(100vh - 60px); box-sizing: border-box; overflow: hidden; }
 
