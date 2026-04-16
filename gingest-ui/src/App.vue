@@ -330,13 +330,13 @@ const resetView = () => {
     }
   }
 }
-
 const handleDownload = () => {
   if (!resultData.value) return
   let downloadContent = ''
   const checkedNodes = dirTreeRef.value ? dirTreeRef.value.getCheckedNodes().filter(n => n.isFile) : []
 
   if (checkedNodes.length > 0) {
+    // 【场景 1：下载勾选的部分文件】
     const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
       + generateTreeText(resultData.value.directoryTree)
 
@@ -351,12 +351,10 @@ const handleDownload = () => {
 
     ElMessage.success(`正在下载选中的 ${checkedNodes.length} 个核心文件...`)
   } else {
-    const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
-      + generateTreeText(resultData.value.directoryTree)
-
+    // 【场景 2：下载全量文件】
+    // 修复 Bug：fullContent 中已经包含了完美的树形结构和代码，不需要再额外拼接 treeText 了！
     downloadContent = `Project: ${resultData.value.projectName}\n` +
       `Export Type: Full Repository (${resultData.value.fullFileCount} files)\n\n` +
-      treeText + "\n\nFiles Content:\n------------------------------------------------\n" +
       resultData.value.fullContent
 
     ElMessage.success('正在下载全库完整代码...')
@@ -367,7 +365,6 @@ const handleDownload = () => {
   const link = document.createElement('a')
   link.href = url
 
-  // 【适配本地文件名】：动态获取工程名，防止跨盘符路径导致无法生成文件
   const baseName = fetchMode.value === 'gitlab' ? searchInput.value : (localPathInput.value.split('\\').pop() || 'local_project')
   const safeProjectName = baseName.replace(/[\\/:*?"<>|]/g, '_')
 
