@@ -229,8 +229,14 @@ const handleIngest = async () => {
     })))
 
     ElMessage.success(`提取成功！共 ${ingestRes.data.fileCount} 个文件`)
-  } catch (error) {
-    ElMessage.error('提取失败，请检查路径或权限')
+  } catch (error: any) {
+    // 【修改】：尝试获取后端返回的真实报错信息，如果没有再使用默认提示
+    const errorMsg = error.response?.data?.message || error.response?.data?.error || '提取失败，请检查路径或权限';
+    ElMessage.error({
+      message: errorMsg,
+      duration: 5000, // 报错停留时间长一点，方便用户阅读
+      showClose: true
+    });
   } finally {
     loading.value = false
   }

@@ -23,6 +23,9 @@ public class LocalFileService {
     );
     private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules", ".git", "target", ".idea", "build");
 
+    // 【新增】：安全熔断阈值，防止扫描超大目录撑爆内存
+    private static final int MAX_FILE_COUNT = 3000; // 最多允许扫描 3000 个有效代码文件
+    private static final long MAX_TOTAL_SIZE = 50 * 1024 * 1024L; // 最多允许累计读取 50MB 文本
     /**
      * 扫描本地目录，提取代码并生成与 GitLab 一致的树形结构
      */
@@ -58,6 +61,13 @@ public class LocalFileService {
                 public FileVisitResult visitFile(@NonNull Path file, BasicFileAttributes attrs) {
                     String fileName = file.getFileName().toString();
                     if (isTextFile(fileName)) {
+                        // 【新增核心防线】：熔断拦截！
+                        if (processedFiles.size() >= MAX_FILE_COUNT) {
+                            throw new RuntimeException("【安全熔断】该目录过大！有效代码文件已超过 " + MAX_FILE_COUNT + " 个，为保护系统内存已强制拦截。请指定更精确的子目录！");
+                        }
+                        if (sizeAndLength[0] >= MAX_TOTAL_SIZE) {
+                            throw new RuntimeException("【安全熔断】该目录过大！累计读取源码已超过 50MB，为保护系统内存已强制拦截。请指定更精确的子目录！");
+                        }
                         // 将 Windows 的反斜杠转换为统一的正斜杠，兼容前端的树形解析
                         String relativePath = rootPath.relativize(file).toString().replace("\\", "/");
                         try {
