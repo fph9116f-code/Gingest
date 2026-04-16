@@ -2,6 +2,9 @@ package com.backend.service;
 
 import com.backend.dto.FacadeInfo;
 import com.backend.dto.GingestResponse;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.gitlab4j.api.GitLabApi;
@@ -25,9 +28,12 @@ public class GitLabService {
     private final GitLabApi gitLabApi;
 
     // 常见需要过滤的二进制文件或无意义文件的后缀/目录
-    private static final Set<String> IGNORE_EXTENSIONS = Set.of(".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz", ".jar",
-            ".class", ".exe", ".xml",".svg",".properties",".md",".cmd",".gitignore",".config",".yml");
-    private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules/", ".git/", "target/", ".idea/", "build/");
+    private static final Set<String> IGNORE_EXTENSIONS = Set.of(
+            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz",
+            ".jar", ".class", ".exe", ".xml", ".node", ".dll", ".so", ".dylib",
+            ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".svg", ".properties", ".cmd", ".gitignore", ".config",".iml"
+    );
+    private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules", ".git", "target", ".idea", "build");
 
     /**
      * 拉取代码并生成包含动态树形结构的响应
@@ -95,9 +101,10 @@ public class GitLabService {
         }
     }
 
-    // ==========================================
-    // 目录树构建魔法（支持 JSON 序列化和内容挂载）
-    // ==========================================
+    // 在 GitLabService.java 中修改 TreeNode
+    @Data // 必须加上，否则 Jackson 无法把字段转为 JSON
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class TreeNode {
         public String label;
         public boolean isFile;
@@ -105,7 +112,7 @@ public class GitLabService {
         public String content;
         public List<TreeNode> children = new ArrayList<>();
 
-        // 内部辅助构建使用，防止被序列化给前端
+        // 内部辅助使用，不序列化
         private transient Map<String, TreeNode> childMap = new TreeMap<>();
 
         public TreeNode(String label) {
@@ -170,11 +177,18 @@ public class GitLabService {
 
     private boolean isTextFile(String fileName) {
         String lowerCaseName = fileName.toLowerCase();
-        for (String dir : IGNORE_DIRECTORIES) {
-            if (lowerCaseName.contains(dir)) {
+
+        // 1. 更严谨的目录过滤方式：将路径切分，逐层判断是否在黑名单中
+        // 比如路径是 "web/node_modules/vue/app.js"，切分后得到 ["web", "node_modules", "vue", "app.js"]
+        String[] pathParts = lowerCaseName.split("/");
+        for (String part : pathParts) {
+            // 只要路径中的任意一层文件夹（或文件名）等于黑名单中的名字，或者是隐藏文件(以.开头)，直接过滤
+            if (part.startsWith(".") || IGNORE_DIRECTORIES.contains(part)) {
                 return false;
             }
         }
+
+        // 2. 后缀过滤保持不变
         for (String ext : IGNORE_EXTENSIONS) {
             if (lowerCaseName.endsWith(ext)) {
                 return false;

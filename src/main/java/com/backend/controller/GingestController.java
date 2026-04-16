@@ -3,8 +3,7 @@ package com.backend.controller;
 import com.backend.dto.FacadeInfo;
 import com.backend.dto.GingestResponse;
 import com.backend.service.GitLabService;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import com.backend.service.LocalFileService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -18,64 +17,93 @@ import org.springframework.web.bind.annotation.RestController;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-@Tag(name = "代码提取", description = "GitLab 代码拉取相关接口")
 @RestController
 @RequestMapping("/api/ingest")
 @RequiredArgsConstructor
 public class GingestController {
 
     private final GitLabService gitLabService;
+    private final LocalFileService localFileService;
 
-    @Operation(summary = "提取指定项目的代码并转为Markdown文本")
     @GetMapping("")
-    public GingestResponse ingest(
-            @RequestParam String projectId,
-            @RequestParam(required = false) String branch) {
+    public GingestResponse ingest(@RequestParam String projectId, @RequestParam(required = false) String branch) {
         return gitLabService.ingestRepository(projectId, branch);
     }
 
-    // 👇 改造后的下载接口
-    @Operation(summary = "提取代码并作为 TXT 文件下载")
-    @GetMapping(value = "/download")
-    public ResponseEntity<byte[]> downloadAsTxt(
-            @RequestParam String projectId,
-            @RequestParam(required = false) String branch) {
+    @GetMapping("/local")
+    public GingestResponse ingestLocal(@RequestParam String localPath) {
+        return localFileService.ingestLocalDirectory(localPath);
+    }
 
-        // 1. 获取结构化的响应数据
+    @GetMapping("/download")
+    public ResponseEntity<byte[]> downloadGitLab(@RequestParam String projectId, @RequestParam(required = false) String branch) {
         GingestResponse response = gitLabService.ingestRepository(projectId, branch);
+        return buildDownloadResponse(response, projectId);
+    }
 
-        // 2. 像 GitIngest 那样，优雅地把数据拼装成一个包含摘要、目录树和正文的纯文本
-        StringBuilder txtBuilder = new StringBuilder();
+    @GetMapping("/local/download")
+    public ResponseEntity<byte[]> downloadLocal(@RequestParam String localPath) {
+        GingestResponse response = localFileService.ingestLocalDirectory(localPath);
+        return buildDownloadResponse(response, localPath);
+    }
 
-        // -- 拼接头部摘要 --
-        txtBuilder.append("Project: ").append(response.getProjectName()).append("\n");
-        txtBuilder.append("Files analyzed: ").append(response.getFileCount()).append("\n");
-        txtBuilder.append("Estimated tokens: ").append(response.getEstimatedTokens()).append("\n");
-        txtBuilder.append("================================================\n\n");
+    /**
+     * 核心逻辑：组装 TXT 下载文件，包含真正的可视化目录树
+     */
+    private ResponseEntity<byte[]> buildDownloadResponse(GingestResponse res, String originalName) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Project: ").append(res.getProjectName()).append("\n");
+        sb.append("Files: ").append(res.getFileCount()).append("\n\n");
 
-        // -- 拼接目录树 --
-        txtBuilder.append("Directory Structure:\n");
-        txtBuilder.append("------------------------------------------------\n");
-        txtBuilder.append(response.getDirectoryTree()).append("\n\n");
+        sb.append("================================================\n");
+        sb.append("Directory Structure:\n");
+        sb.append("================================================\n.\n");
+        // 核心：在后端也将 JSON 树转为可视化 ASCII 树
+        generateAsciiTree(res.getDirectoryTree(), "", sb);
 
-        // -- 拼接详细代码内容 --
-        txtBuilder.append("Files Content:\n");
-        txtBuilder.append("------------------------------------------------\n");
-        txtBuilder.append(response.getContent());
+        sb.append("\n\n================================================\n");
+        sb.append("Files Content:\n");
+        sb.append("================================================\n\n");
+        // 递归提取所有文件内容
+        extractAllContent(res.getDirectoryTree(), sb);
 
-        // 3. 将拼接好的优美文本转为字节数组
-        byte[] contentBytes = txtBuilder.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = sb.toString().getBytes(StandardCharsets.UTF_8);
+        String fileName = originalName.replaceAll("[\\\\/:*?\"<>|]", "_") + "_gingest.txt";
 
-        // 4. 构造一个安全的文件名 (处理一下路径里的斜杠，防止破坏文件名)
-        String safeFileName = projectId.replaceAll("[\\\\/:*?\"<>|]", "_") + "_gingest.txt";
-
-        // 5. 设置 HTTP 响应头，触发浏览器下载
         HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM); // 告诉浏览器这是二进制流
-        headers.setContentDispositionFormData("attachment", safeFileName); // 告诉浏览器作为附件下载，并指定文件名
+        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+        headers.setContentDispositionFormData("attachment", fileName);
+        return new ResponseEntity<>(bytes, headers, HttpStatus.OK);
+    }
 
-        // 6. 返回包含响应头和字节流的 ResponseEntity
-        return new ResponseEntity<>(contentBytes, headers, HttpStatus.OK);
+    private void generateAsciiTree(List<GitLabService.TreeNode> nodes, String prefix, StringBuilder sb) {
+        if (nodes == null) {
+            return;
+        }
+        for (int i = 0; i < nodes.size(); i++) {
+            GitLabService.TreeNode node = nodes.get(i);
+            boolean isLast = (i == nodes.size() - 1);
+            sb.append(prefix).append(isLast ? "└── " : "├── ").append(node.label).append(node.isFile ? "" : "/").append("\n");
+            if (node.getChildren() != null && !node.getChildren().isEmpty()) {
+                generateAsciiTree(node.getChildren(), prefix + (isLast ? "    " : "│   "), sb);
+            }
+        }
+    }
+
+    private void extractAllContent(List<GitLabService.TreeNode> nodes, StringBuilder sb) {
+        if (nodes == null) {
+            return;
+        }
+        for (GitLabService.TreeNode node : nodes) {
+            if (node.isFile) {
+                sb.append("------------------------------------------------\n");
+                sb.append("File: ").append(node.fullPath).append("\n");
+                sb.append("------------------------------------------------\n");
+                sb.append(node.content).append("\n\n");
+            } else {
+                extractAllContent(node.children, sb);
+            }
+        }
     }
 
     @GetMapping("/branches")
@@ -88,11 +116,8 @@ public class GingestController {
         return gitLabService.getAllAccessibleProjects();
     }
 
-    // 请将这段代码加到你的 GingestController.java 里
     @GetMapping("/facades")
-    public List<FacadeInfo> getFacades(
-            @RequestParam String projectId,
-            @RequestParam(required = false) String branch) {
+    public List<FacadeInfo> getFacades(@RequestParam String projectId, @RequestParam(required = false) String branch) {
         return gitLabService.extractFacadeMethods(projectId, branch);
     }
 }
