@@ -33,6 +33,7 @@ interface TreeNode {
 }
 
 const fetchMode = ref<'gitlab' | 'local'>('gitlab')
+// 记录本地模式下选择的文件夹名称，用于下载时的文件名
 const localPathInput = ref<string>('')
 
 const searchInput = ref<string>('')
@@ -150,9 +151,143 @@ const handleFetchBranches = async () => {
   }
 }
 
+// ==========================================
+// 【黑科技核心】：纯前端浏览器直读 API 实现
+// ==========================================
+const IGNORE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz',
+  '.jar', '.class', '.exe', '.xml', '.node', '.dll', '.so', '.dylib',
+  '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.mp3', '.svg', '.properties',
+  '.cmd', '.gitignore', '.config', '.iml',
+  '.map', '.sql', '.bak', '.log', '.out', '.min.js', '.min.css'
+])
+const IGNORE_DIRECTORIES = new Set(['node_modules', '.git', 'target', '.idea', 'build', 'dist'])
+const IGNORE_FILE_NAMES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'])
+const MAX_FILE_COUNT = 3000
+const MAX_TOTAL_SIZE = 50 * 1024 * 1024 // 50MB
+
+// 前端复刻的树形构建算法
+const buildLocalTree = (paths: string[], contentMap: Record<string, string>): TreeNode[] => {
+  if (!paths || paths.length === 0) return []
+  const root: any = { label: 'root', childMap: {} }
+
+  for (const path of paths) {
+    const parts = path.split('/')
+    let current = root
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      if (!current.childMap[part]) {
+        current.childMap[part] = { label: part, isFile: false, childMap: {} }
+      }
+      current = current.childMap[part]
+      if (i === parts.length - 1) {
+        current.isFile = true
+        current.fullPath = path
+        current.content = contentMap[path]
+      }
+    }
+  }
+
+  const compressTree = (node: any) => {
+    const children = Object.values(node.childMap)
+    for (const child of children) compressTree(child)
+
+    if (node.label !== 'root' && !node.isFile && Object.keys(node.childMap).length === 1) {
+      const singleChild: any = Object.values(node.childMap)[0]
+      node.label = node.label + '/' + singleChild.label
+      node.childMap = singleChild.childMap
+      node.isFile = singleChild.isFile
+      node.fullPath = singleChild.fullPath
+      node.content = singleChild.content
+    }
+  }
+
+  const convertMapToList = (node: any) => {
+    node.children = Object.values(node.childMap)
+    for (const child of node.children) convertMapToList(child)
+    delete node.childMap
+  }
+
+  compressTree(root)
+  convertMapToList(root)
+  return root.children
+}
+
+const processLocalDirectory = async (): Promise<GingestResponse> => {
+  // 唤起系统文件夹选择器
+  const dirHandle = await (window as any).showDirectoryPicker()
+  localPathInput.value = dirHandle.name // 更新记录
+
+  let fileCount = 0
+  let totalTextLength = 0
+  let byteSize = 0
+  const processedFiles: string[] = []
+  const fileContents: Record<string, string> = {}
+
+  const traverse = async (handle: any, currentPath: string) => {
+    for await (const entry of handle.values()) {
+      if (entry.kind === 'directory') {
+        if (entry.name.startsWith('.') || IGNORE_DIRECTORIES.has(entry.name.toLowerCase())) continue
+        await traverse(entry, currentPath + entry.name + '/')
+      } else if (entry.kind === 'file') {
+        const fileName = entry.name
+        const lowerName = fileName.toLowerCase()
+
+        if (IGNORE_FILE_NAMES.has(lowerName)) continue
+
+        let isIgnoredExt = false
+        for (const ext of IGNORE_EXTENSIONS) {
+          if (lowerName.endsWith(ext)) {
+            isIgnoredExt = true
+            break
+          }
+        }
+        if (isIgnoredExt) continue
+
+        if (fileCount >= MAX_FILE_COUNT) {
+          throw new Error(`【安全熔断】该目录过大！有效代码文件已超过 ${MAX_FILE_COUNT} 个，为保护浏览器内存已强制拦截。请指定更精确的子目录！`)
+        }
+        if (byteSize >= MAX_TOTAL_SIZE) {
+          throw new Error(`【安全熔断】该目录过大！累计读取源码已超过 50MB，为保护浏览器内存已强制拦截。请指定更精确的子目录！`)
+        }
+
+        const file = await entry.getFile()
+        const relativePath = currentPath + fileName
+        processedFiles.push(relativePath)
+
+        let content = ''
+        // 500KB 巨无霸文件熔断机制
+        if (file.size > 500 * 1024) {
+          content = `// 【Gingest 拦截提示】：该文件体积过大 (${formatSize(file.size)})。为了防止爆内存及大模型 Token 浪费，其正文已被系统自动忽略。`
+        } else {
+          content = await file.text()
+        }
+
+        fileContents[relativePath] = content
+        totalTextLength += content.length
+        byteSize += file.size
+        fileCount++
+      }
+    }
+  }
+
+  await traverse(dirHandle, '')
+
+  return {
+    projectName: 'Local: ' + dirHandle.name,
+    fileCount,
+    estimatedTokens: Math.floor(totalTextLength / 4),
+    formattedSize: formatSize(byteSize),
+    directoryTree: buildLocalTree(processedFiles, fileContents),
+    content: ''
+  }
+}
+
+// ==========================================
+// 主提交流程
+// ==========================================
 const handleIngest = async () => {
   if (fetchMode.value === 'gitlab' && !searchInput.value) return ElMessage.warning('请选择项目')
-  if (fetchMode.value === 'local' && !localPathInput.value) return ElMessage.warning('请输入本地目录绝对路径')
 
   loading.value = true
   facadeTreeData.value = []
@@ -162,18 +297,33 @@ const handleIngest = async () => {
   resultData.value = null
 
   try {
-    let ingestRes: any;
-    let facadeRes: any = { data: [] };
+    let ingestRes: any = { data: {} }
+    let facadeRes: any = { data: [] }
 
     if (fetchMode.value === 'gitlab') {
+      const axiosConfig = { timeout: 120000 }
       const [res1, res2] = await Promise.all([
-        axios.get<GingestResponse>('/api/ingest', { params: { projectId: searchInput.value, branch: selectedBranch.value } }),
-        axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value } }).catch(() => ({ data: [] }))
+        axios.get<GingestResponse>('/api/ingest', { params: { projectId: searchInput.value, branch: selectedBranch.value }, ...axiosConfig }),
+        axios.get<FacadeInfo[]>('/api/ingest/facades', { params: { projectId: searchInput.value, branch: selectedBranch.value }, ...axiosConfig }).catch(() => ({ data: [] }))
       ])
-      ingestRes = res1;
-      facadeRes = res2;
+      ingestRes = res1
+      facadeRes = res2
     } else {
-      ingestRes = await axios.get<GingestResponse>('/api/ingest/local', { params: { localPath: localPathInput.value } })
+      // 本地模式拦截与调用
+      if (!('showDirectoryPicker' in window)) {
+        loading.value = false
+        return ElMessage.error('您的浏览器不支持直读本地目录，请使用最新版 Chrome 或 Edge 浏览器！')
+      }
+      try {
+        const localData = await processLocalDirectory()
+        ingestRes.data = localData
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          loading.value = false
+          return // 用户取消了弹窗，静默退出
+        }
+        throw err // 把熔断异常抛给最外层 catch
+      }
     }
 
     let idCounter = 1
@@ -185,29 +335,40 @@ const handleIngest = async () => {
     }
     assignIds(ingestRes.data.directoryTree)
 
-    let assembledContent = ''
-    const gatherAll = (nodes: TreeNode[]) => {
-      nodes.forEach(n => {
-        if (n.isFile) {
-          assembledContent += `================================================\nFile: ${n.fullPath || n.label}\n================================================\n${n.content || ''}\n\n`
-        } else if (n.children) {
-          gatherAll(n.children)
-        }
-      })
-    }
-    gatherAll(ingestRes.data.directoryTree)
-
     const fullTreeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n" + generateTreeText(ingestRes.data.directoryTree)
-    const finalFullContent = fullTreeText + "\n\nFiles Content:\n------------------------------------------------\n" + assembledContent
 
-    ingestRes.data.content = finalFullContent
-    ingestRes.data.fullContent = finalFullContent
+    if (ingestRes.data.estimatedTokens > 500000) {
+      const warningText = `${fullTreeText}\n\n================================================\n` +
+        `【⚠️ 系统保护机制：当前仓库极其庞大 (${ingestRes.data.estimatedTokens} Tokens)】\n` +
+        `为防止浏览器内存崩溃，已自动关闭全库代码的合并预览。\n\n` +
+        `👉 您的操作指南：\n` +
+        `1. 请在左侧【目录结构】中，精准勾选您本次需要分析的核心业务文件。\n` +
+        `2. 勾选完成后，点击右上角的【组装勾选】按钮。\n` +
+        `3. 不要试图把整个微服务喂给大模型（AI 无法一次性处理百万 Token！）。\n` +
+        `================================================`
+      ingestRes.data.content = warningText
+      ingestRes.data.fullContent = warningText
+    } else {
+      let contentArray: string[] = []
+      const gatherAll = (nodes: TreeNode[]) => {
+        nodes.forEach(n => {
+          if (n.isFile) {
+            contentArray.push(`================================================\nFile: ${n.fullPath || n.label}\n================================================\n${n.content || ''}\n\n`)
+          } else if (n.children) {
+            gatherAll(n.children)
+          }
+        })
+      }
+      gatherAll(ingestRes.data.directoryTree)
+      const finalFullContent = fullTreeText + "\n\nFiles Content:\n------------------------------------------------\n" + contentArray.join('')
+      ingestRes.data.content = finalFullContent
+      ingestRes.data.fullContent = finalFullContent
+    }
 
     ingestRes.data.fullFileCount = ingestRes.data.fileCount
     ingestRes.data.fullEstimatedTokens = ingestRes.data.estimatedTokens
     ingestRes.data.fullFormattedSize = ingestRes.data.formattedSize
 
-    // 【极致防卡死】：用 markRaw 将整个根对象彻底冻结，严禁 Vue 解析 16MB+ 文本进行响应式劫持！
     resultData.value = markRaw(ingestRes.data)
 
     facadeTreeData.value = markRaw(facadeRes.data.map((item: FacadeInfo) => ({
@@ -219,16 +380,21 @@ const handleIngest = async () => {
 
     ElMessage.success(`提取成功！共 ${ingestRes.data.fileCount} 个文件`)
   } catch (error: any) {
-    const errorMsg = error.response?.data?.message || error.response?.data?.error || '提取失败，请检查路径或权限';
-    ElMessage.error({
-      message: errorMsg,
-      duration: 5000,
-      showClose: true
-    });
+    // 智能报错：兼容 Axios 网络报错 与 纯前端直读的 Error 报错
+    let errorMsg = '提取失败，请检查路径或网络连接'
+    if (error.response?.data?.message || error.response?.data?.error) {
+      errorMsg = error.response.data.message || error.response.data.error
+    } else if (error.message) {
+      errorMsg = error.message
+    }
+    ElMessage.error({ message: errorMsg, duration: 6000, showClose: true })
   } finally {
     loading.value = false
   }
 }
+
+// ... 下方的 generateTreeText, handleAssembleSelected, findContentByPath,
+// handleFacadeTreeClick, resetView, handleDownload, handleCopy 保持原样不变 ...
 
 const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
   let text = ''
@@ -350,7 +516,7 @@ const handleDownload = () => {
   const link = document.createElement('a')
   link.href = url
 
-  const baseName = fetchMode.value === 'gitlab' ? searchInput.value : (localPathInput.value.split('\\').pop() || 'local_project')
+  const baseName = fetchMode.value === 'gitlab' ? searchInput.value : (localPathInput.value || 'local_project')
   const safeProjectName = baseName.replace(/[\\/:*?"<>|]/g, '_')
 
   link.download = `${safeProjectName}_gingest${checkedNodes.length > 0 ? '_selected' : '_full'}.txt`
@@ -407,19 +573,17 @@ const handleCopy = async () => {
           </template>
 
           <template v-else>
-            <el-input
-              v-model="localPathInput"
-              placeholder="请输入本地绝对路径，例如 D:\work\zoe-outp-order-service"
-              clearable
-              class="local-input"
-            />
+            <div style="display: flex; align-items: center; color: #a8abb2; font-size: 14px; margin-right: 15px;">
+              <el-icon style="margin-right: 5px;"><Folder /></el-icon>
+              点击右侧【开始提取】，浏览器将安全地直读您的本地目录
+            </div>
           </template>
 
           <el-button type="primary" :loading="loading" @click="handleIngest">开始提取</el-button>
         </div>
       </el-header>
 
-      <el-main class="main-content" v-loading="loading" :element-loading-text="fetchMode === 'gitlab' ? '正在狂奔向 GitLab 拉取代码...' : '正在极速扫描本地磁盘...'">
+      <el-main class="main-content" v-loading="loading" :element-loading-text="fetchMode === 'gitlab' ? '正在狂奔向 GitLab 拉取代码...' : '正在唤起系统资源管理器...'">
         <div class="top-section" v-if="resultData" :style="{ height: topHeight + 'px' }">
           <el-row :gutter="15" class="h-100">
 
