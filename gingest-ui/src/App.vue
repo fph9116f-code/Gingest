@@ -50,6 +50,7 @@ const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
+// UI 渲染的终极防线：无论内存里存了多大的数据，界面上的 textarea 最多只渲染 10 万个字符
 const MAX_DISPLAY_LENGTH = 100000
 const isContentTruncated = computed(() => {
   return resultData.value && resultData.value.content && resultData.value.content.length > MAX_DISPLAY_LENGTH
@@ -174,7 +175,7 @@ const IGNORE_EXTENSIONS = new Set([
 const IGNORE_DIRECTORIES = new Set(['node_modules', '.git', 'target', '.idea', 'build', 'dist'])
 const IGNORE_FILE_NAMES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'])
 const MAX_FILE_COUNT = 3000
-const MAX_TOTAL_SIZE = 50 * 1024 * 1024 // 50MB
+const MAX_TOTAL_SIZE = 50 * 1024 * 1024 // 50MB 内存保护阈值
 
 const buildLocalTree = (paths: string[], contentMap: Record<string, string>): TreeNode[] => {
   if (!paths || paths.length === 0) return []
@@ -253,12 +254,9 @@ const processLocalDirectoryModern = async (): Promise<GingestResponse> => {
         const relativePath = currentPath + fileName
         processedFiles.push(relativePath)
 
-        let content = ''
-        if (file.size > 500 * 1024) {
-          content = `// 【Gingest 拦截提示】：文件过大 (${formatSize(file.size)})，已忽略正文。`
-        } else {
-          content = await file.text()
-        }
+        // 【修改点】：取消了单文件 500KB 的正文忽略限制，全部读取，保证下载时能获取完整代码
+        const content = await file.text()
+
         fileContents[relativePath] = content
         totalTextLength += content.length; byteSize += file.size; fileCount++
       }
@@ -286,6 +284,10 @@ const processLocalDirectoryLegacy = (): Promise<GingestResponse> => {
       const target = e.target as HTMLInputElement
       const files = target.files
       if (!files || files.length === 0) return reject(new Error('AbortError'))
+
+      if (files.length > 4000) {
+        return reject(new Error(`【拦截】包含文件过多 (${files.length} 个)！为防止卡死，请直接选中 src 目录，不要选包含 node_modules 的根目录。`))
+      }
 
       loading.value = true
       try {
@@ -322,12 +324,10 @@ const processLocalDirectoryLegacy = (): Promise<GingestResponse> => {
           if (!relativePath) continue
 
           processedFiles.push(relativePath)
-          let content = ''
-          if (file.size > 500 * 1024) {
-            content = `// 【Gingest 拦截提示】：文件过大 (${formatSize(file.size)})，已忽略正文。`
-          } else {
-            content = await file.text()
-          }
+
+          // 【修改点】：取消 500KB 限制，全量读取真实内容
+          const content = await file.text()
+
           fileContents[relativePath] = content
           totalTextLength += content.length; byteSize += file.size; fileCount++
         }
@@ -407,6 +407,21 @@ const handleIngest = async () => {
 
     const fullTreeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n" + generateTreeText(ingestRes.data.directoryTree)
 
+    // 无论项目多大，我们在底层内存中始终拼装一个真实的 finalFullContent 准备给下载用
+    let contentArray: string[] = []
+    const gatherAll = (nodes: TreeNode[]) => {
+      nodes.forEach(n => {
+        if (n.isFile) {
+          contentArray.push(`================================================\nFile: ${n.fullPath || n.label}\n================================================\n${n.content || ''}\n\n`)
+        } else if (n.children) {
+          gatherAll(n.children)
+        }
+      })
+    }
+    gatherAll(ingestRes.data.directoryTree)
+    const finalFullContent = fullTreeText + "\n\nFiles Content:\n------------------------------------------------\n" + contentArray.join('')
+
+    // 【修改点：分离显示与下载缓存】
     if (ingestRes.data.estimatedTokens > 500000) {
       const warningText = `${fullTreeText}\n\n================================================\n` +
         `【⚠️ 系统保护机制：当前仓库极其庞大 (${ingestRes.data.estimatedTokens} Tokens)】\n` +
@@ -414,23 +429,11 @@ const handleIngest = async () => {
         `👉 您的操作指南：\n` +
         `1. 请在左侧【目录结构】中，精准勾选您本次需要分析的核心业务文件。\n` +
         `2. 勾选完成后，点击右上角的【组装勾选】按钮。\n` +
-        `3. 不要试图把整个微服务喂给大模型（AI 无法一次性处理百万 Token！）。\n` +
+        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n` +
         `================================================`
-      ingestRes.data.content = warningText
-      ingestRes.data.fullContent = warningText
+      ingestRes.data.content = warningText          // UI 显示警告
+      ingestRes.data.fullContent = finalFullContent // 缓存完整内容给下载和复制
     } else {
-      let contentArray: string[] = []
-      const gatherAll = (nodes: TreeNode[]) => {
-        nodes.forEach(n => {
-          if (n.isFile) {
-            contentArray.push(`================================================\nFile: ${n.fullPath || n.label}\n================================================\n${n.content || ''}\n\n`)
-          } else if (n.children) {
-            gatherAll(n.children)
-          }
-        })
-      }
-      gatherAll(ingestRes.data.directoryTree)
-      const finalFullContent = fullTreeText + "\n\nFiles Content:\n------------------------------------------------\n" + contentArray.join('')
       ingestRes.data.content = finalFullContent
       ingestRes.data.fullContent = finalFullContent
     }
@@ -503,57 +506,81 @@ const handleAssembleSelected = () => {
     fileCount: selectedFiles.length,
     estimatedTokens: Math.floor(finalString.length / 4),
     formattedSize: formatSize(new Blob([finalString]).size)
-  })
+  } as GingestResponse)
 
   currentViewTitle.value = `组装完毕: 完整大纲 + ${selectedFiles.length} 个文件代码`
   ElMessage.success(`成功组装！共抽取了 ${selectedFiles.length} 个核心文件`)
 }
 
-const findContentByPath = (nodes: TreeNode[], targetPath: string): string | null => {
+const findNodeIdByPath = (nodes: TreeNode[], targetPath: string): number | null => {
   for (const n of nodes) {
-    if (n.isFile && n.fullPath === targetPath) return n.content || null
+    if (n.isFile && n.fullPath === targetPath) return n.id || null
     if (n.children && n.children.length > 0) {
-      const found = findContentByPath(n.children, targetPath)
-      if (found) return found
+      const found = findNodeIdByPath(n.children, targetPath)
+      if (found !== null) return found
     }
   }
   return null
 }
 
-const handleFacadeTreeClick = (node: TreeNode) => {
-  if (!resultData.value || !node.path) return
-  const content = findContentByPath(resultData.value.directoryTree, node.path)
+const handleFacadeTreeClick = (data: any) => {
+  const node = data as TreeNode;
+  if (!resultData.value || !node.path || !dirTreeRef.value) return
 
-  if (content) {
-    const finalString = `================================================\nFile: ${node.path}\n================================================\n${content}\n`
+  const targetId = findNodeIdByPath(resultData.value.directoryTree, node.path)
 
-    // 【核心修复】：同理，解构重组触发 UI 刷新
-    resultData.value = markRaw({
-      ...resultData.value,
-      content: finalString,
-      fileCount: 1,
-      estimatedTokens: Math.floor(finalString.length / 4),
-      formattedSize: formatSize(new Blob([finalString]).size)
-    })
+  if (targetId !== null) {
+    dirTreeRef.value.setChecked(targetId, true, false)
+
+    const treeNode = dirTreeRef.value.getNode(targetId)
+    if (treeNode) {
+      let parent = treeNode.parent
+      while (parent && parent.level > 0) {
+        parent.expanded = true
+        parent = parent.parent
+      }
+
+      dirTreeRef.value.setCurrentKey(targetId)
+
+      setTimeout(() => {
+        const el = document.querySelector('.el-tree-node.is-current')
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+      }, 100)
+    }
 
     const displayName = node.parentClass ? node.parentClass : node.label
-    currentViewTitle.value = `查看源码: ${displayName}`
+    ElMessage.success(`已在目录树中自动定位并勾选: ${displayName}`)
   } else {
-    ElMessage.warning('未在目录树中提取到该源码 (可能已被过滤)')
+    ElMessage.warning('未在目录树中找到该文件 (可能已被过滤或未提取)')
   }
 }
 
 const resetView = () => {
   if (resultData.value && resultData.value.fullContent) {
 
-    // 【核心修复】：从缓存中恢复原始统计数据，触发 UI 刷新
+    // 【修改点：恢复查看时，判断是否触碰熔断保护】
+    let displayContent = resultData.value.fullContent
+    if (resultData.value.fullEstimatedTokens! > 500000) {
+      const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n" + generateTreeText(resultData.value.directoryTree)
+      displayContent = `${treeText}\n\n================================================\n` +
+        `【⚠️ 系统保护机制：当前仓库极其庞大 (${resultData.value.fullEstimatedTokens} Tokens)】\n` +
+        `为防止浏览器内存崩溃，已自动关闭全库代码的合并预览。\n\n` +
+        `👉 您的操作指南：\n` +
+        `1. 请在左侧【目录结构】中，精准勾选您本次需要分析的核心业务文件。\n` +
+        `2. 勾选完成后，点击右上角的【组装勾选】按钮。\n` +
+        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n` +
+        `================================================`
+    }
+
     resultData.value = markRaw({
       ...resultData.value,
-      content: resultData.value.fullContent,
+      content: displayContent,
       fileCount: resultData.value.fullFileCount!,
       estimatedTokens: resultData.value.fullEstimatedTokens!,
       formattedSize: resultData.value.fullFormattedSize!
-    })
+    } as GingestResponse)
 
     currentViewTitle.value = '全部提取结果 (All Files)'
     if (dirTreeRef.value) {
@@ -574,6 +601,7 @@ const handleDownload = () => {
 
     let contentText = "\n\n================================================\nSelected Files Content:\n================================================\n\n"
     checkedNodes.forEach(file => {
+      // 因为现在取消了读取限制，单个节点里的 file.content 一定是完整的！
       contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
     })
 
@@ -583,6 +611,7 @@ const handleDownload = () => {
 
     ElMessage.success(`正在下载选中的 ${checkedNodes.length} 个核心文件...`)
   } else {
+    // 因为 fullContent 保存的是真正的全库代码，所以直接下载没问题！
     downloadContent = `Project: ${resultData.value.projectName}\n` +
       `Export Type: Full Repository (${resultData.value.fullFileCount} files)\n\n` +
       resultData.value.fullContent

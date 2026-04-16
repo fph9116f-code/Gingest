@@ -72,16 +72,9 @@ public class GitLabService {
                         processedFiles.add(cleanPath);
 
                         byte[] fileBytes = zipIn.readAllBytes();
-                        String fileContent;
+                        // 取消所有限制，无脑转成字符串，交给前端强大的防卡死机制去处理
+                        String fileContent = new String(fileBytes, StandardCharsets.UTF_8);
 
-                        // 【核心改动：单文件熔断保护】
-                        // 如果单文件超过 500KB (512,000 bytes)，大概率是机器生成的产物或超大数据字典
-                        if (fileBytes.length > 500 * 1024) {
-                            fileContent = "// 【Gingest 拦截提示】：该文件体积过大 (" + formatSize(fileBytes.length) + ")。为了防止爆内存及大模型 Token 浪费，其正文已被系统自动忽略。";
-                            log.warn("已跳过超大文件: {} ({})", cleanPath, formatSize(fileBytes.length));
-                        } else {
-                            fileContent = new String(fileBytes, StandardCharsets.UTF_8);
-                        }
 
                         fileContents.put(cleanPath, fileContent);
 
