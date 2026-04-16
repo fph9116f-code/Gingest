@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { Document, Download, Connection, Refresh, CircleCheck, Folder } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElTree } from 'element-plus'
@@ -36,6 +36,27 @@ interface TreeNode {
 const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
+
+// ==========================================
+// 【新增】：防卡死预览截断逻辑
+// ==========================================
+const MAX_DISPLAY_LENGTH = 100000 // 10 万字符安全阈值，随便拖拽都不卡
+const isContentTruncated = computed(() => {
+  return resultData.value && resultData.value.content && resultData.value.content.length > MAX_DISPLAY_LENGTH
+})
+
+const previewContent = computed(() => {
+  if (!resultData.value || !resultData.value.content) return ''
+  if (resultData.value.content.length > MAX_DISPLAY_LENGTH) {
+    return resultData.value.content.substring(0, MAX_DISPLAY_LENGTH) +
+      '\n\n\n================================================\n' +
+      '【⚠️ 内容过长，已开启防卡死截断保护】\n' +
+      ' 为保证浏览器流畅，此处仅展示前 10 万字符预览。\n' +
+      ' 您提取的完整代码已在后台就绪，请点击上方【复制】或【下载】获取全量内容！\n' +
+      '================================================'
+  }
+  return resultData.value.content
+})
 
 const currentViewTitle = ref<string>('全部提取结果 (All Files)')
 
@@ -316,6 +337,18 @@ const handleDownload = () => {
 
 const handleCopy = async () => {
   if (!resultData.value || !resultData.value.content) return
+
+  // 【新增强制限制】：如果内容因为过大被截断展示，严禁复制到剪贴板
+  if (isContentTruncated.value) {
+    ElMessage({
+      message: '内容过大！为确保浏览器稳定和数据完整性，暂不允许直接复制。请点击右侧【下载完整 TXT】获取全量内容。',
+      type: 'error',
+      duration: 5000, // 提示停留久一点，确保用户看清
+      showClose: true
+    })
+    return
+  }
+
   try {
     await navigator.clipboard.writeText(resultData.value.content)
     ElMessage.success('当前视图的代码已复制！')
@@ -423,7 +456,11 @@ const handleCopy = async () => {
                 <el-button type="info" plain :icon="Refresh" @click="resetView" v-if="currentViewTitle !== '全部提取结果 (All Files)'">
                   恢复查看全库
                 </el-button>
-                <el-button type="success" :icon="Document" @click="handleCopy">
+                <el-button
+                  :type="isContentTruncated ? 'info' : 'success'"
+                  :icon="Document"
+                  @click="handleCopy"
+                >
                   复制当前视图代码
                 </el-button>
                 <el-button type="warning" :icon="Download" @click="handleDownload">
@@ -431,8 +468,18 @@ const handleCopy = async () => {
                 </el-button>
               </div>
             </div>
+
+            <el-alert
+              v-if="isContentTruncated"
+              title="⚠️ 代码量过大！为防止浏览器卡死，下方仅展示预览。请放心点击上方【复制】或【下载】，获取的是 100% 完整代码。"
+              type="warning"
+              show-icon
+              :closable="false"
+              style="margin-bottom: 10px; flex-shrink: 0;"
+            />
+
             <div class="textarea-wrapper">
-              <el-input type="textarea" readonly v-model="resultData.content" class="code-font bottom-textarea" />
+              <el-input type="textarea" readonly :model-value="previewContent" class="code-font bottom-textarea" />
             </div>
           </template>
           <el-card v-else class="empty-card" shadow="never">
