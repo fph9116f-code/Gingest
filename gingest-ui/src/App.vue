@@ -497,10 +497,13 @@ const handleAssembleSelected = () => {
 
   const finalString = treeText + contentText
 
-  resultData.value.content = finalString
-  resultData.value.fileCount = selectedFiles.length
-  resultData.value.estimatedTokens = Math.floor(finalString.length / 4)
-  resultData.value.formattedSize = formatSize(new Blob([finalString]).size)
+  resultData.value = markRaw({
+    ...resultData.value,
+    content: finalString,
+    fileCount: selectedFiles.length,
+    estimatedTokens: Math.floor(finalString.length / 4),
+    formattedSize: formatSize(new Blob([finalString]).size)
+  })
 
   currentViewTitle.value = `组装完毕: 完整大纲 + ${selectedFiles.length} 个文件代码`
   ElMessage.success(`成功组装！共抽取了 ${selectedFiles.length} 个核心文件`)
@@ -524,10 +527,14 @@ const handleFacadeTreeClick = (node: TreeNode) => {
   if (content) {
     const finalString = `================================================\nFile: ${node.path}\n================================================\n${content}\n`
 
-    resultData.value.content = finalString
-    resultData.value.fileCount = 1
-    resultData.value.estimatedTokens = Math.floor(finalString.length / 4)
-    resultData.value.formattedSize = formatSize(new Blob([finalString]).size)
+    // 【核心修复】：同理，解构重组触发 UI 刷新
+    resultData.value = markRaw({
+      ...resultData.value,
+      content: finalString,
+      fileCount: 1,
+      estimatedTokens: Math.floor(finalString.length / 4),
+      formattedSize: formatSize(new Blob([finalString]).size)
+    })
 
     const displayName = node.parentClass ? node.parentClass : node.label
     currentViewTitle.value = `查看源码: ${displayName}`
@@ -538,10 +545,15 @@ const handleFacadeTreeClick = (node: TreeNode) => {
 
 const resetView = () => {
   if (resultData.value && resultData.value.fullContent) {
-    resultData.value.content = resultData.value.fullContent
-    resultData.value.fileCount = resultData.value.fullFileCount!
-    resultData.value.estimatedTokens = resultData.value.fullEstimatedTokens!
-    resultData.value.formattedSize = resultData.value.fullFormattedSize!
+
+    // 【核心修复】：从缓存中恢复原始统计数据，触发 UI 刷新
+    resultData.value = markRaw({
+      ...resultData.value,
+      content: resultData.value.fullContent,
+      fileCount: resultData.value.fullFileCount!,
+      estimatedTokens: resultData.value.fullEstimatedTokens!,
+      formattedSize: resultData.value.fullFormattedSize!
+    })
 
     currentViewTitle.value = '全部提取结果 (All Files)'
     if (dirTreeRef.value) {
