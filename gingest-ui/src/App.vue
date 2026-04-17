@@ -254,7 +254,6 @@ const processLocalDirectoryModern = async (): Promise<GingestResponse> => {
         const relativePath = currentPath + fileName
         processedFiles.push(relativePath)
 
-        // 【修改点】：取消了单文件 500KB 的正文忽略限制，全部读取，保证下载时能获取完整代码
         const content = await file.text()
 
         fileContents[relativePath] = content
@@ -325,7 +324,6 @@ const processLocalDirectoryLegacy = (): Promise<GingestResponse> => {
 
           processedFiles.push(relativePath)
 
-          // 【修改点】：取消 500KB 限制，全量读取真实内容
           const content = await file.text()
 
           fileContents[relativePath] = content
@@ -351,7 +349,7 @@ const processLocalDirectoryLegacy = (): Promise<GingestResponse> => {
 
 
 // ==========================================
-// 主提交流程
+// 主提交流程 (XML 格式组装)
 // ==========================================
 const handleIngest = async () => {
   if (fetchMode.value === 'gitlab' && !searchInput.value) return ElMessage.warning('请选择项目')
@@ -405,34 +403,37 @@ const handleIngest = async () => {
     }
     assignIds(ingestRes.data.directoryTree)
 
-    const fullTreeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n" + generateTreeText(ingestRes.data.directoryTree)
+    // 【修改点：组装大模型专用的 XML 元数据与目录树】
+    const summaryXml = `<project_summary>\nProject: ${ingestRes.data.projectName}\nTotal Files: ${ingestRes.data.fileCount}\nEstimated Tokens: ${ingestRes.data.estimatedTokens}\n</project_summary>\n\n`
+    const treeXml = `<directory_tree>\n.\n${generateTreeText(ingestRes.data.directoryTree)}</directory_tree>\n`
+    const fullTreeText = summaryXml + treeXml
 
-    // 无论项目多大，我们在底层内存中始终拼装一个真实的 finalFullContent 准备给下载用
     let contentArray: string[] = []
     const gatherAll = (nodes: TreeNode[]) => {
       nodes.forEach(n => {
         if (n.isFile) {
-          contentArray.push(`================================================\nFile: ${n.fullPath || n.label}\n================================================\n${n.content || ''}\n\n`)
+          // 【修改点：采用 XML 标签包裹代码文件】
+          contentArray.push(`<file path="${n.fullPath || n.label}">\n${n.content || ''}\n</file>\n\n`)
         } else if (n.children) {
           gatherAll(n.children)
         }
       })
     }
     gatherAll(ingestRes.data.directoryTree)
-    const finalFullContent = fullTreeText + "\n\nFiles Content:\n------------------------------------------------\n" + contentArray.join('')
 
-    // 【修改点：分离显示与下载缓存】
+    // 【修改点：增加 <files> 根节点】
+    const finalFullContent = fullTreeText + "\n<files>\n" + contentArray.join('') + "</files>"
+
     if (ingestRes.data.estimatedTokens > 500000) {
-      const warningText = `${fullTreeText}\n\n================================================\n` +
+      const warningText = `${fullTreeText}\n` +
         `【⚠️ 系统保护机制：当前仓库极其庞大 (${ingestRes.data.estimatedTokens} Tokens)】\n` +
         `为防止浏览器内存崩溃，已自动关闭全库代码的合并预览。\n\n` +
         `👉 您的操作指南：\n` +
         `1. 请在左侧【目录结构】中，精准勾选您本次需要分析的核心业务文件。\n` +
         `2. 勾选完成后，点击右上角的【组装勾选】按钮。\n` +
-        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n` +
-        `================================================`
-      ingestRes.data.content = warningText          // UI 显示警告
-      ingestRes.data.fullContent = finalFullContent // 缓存完整内容给下载和复制
+        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n`
+      ingestRes.data.content = warningText
+      ingestRes.data.fullContent = finalFullContent
     } else {
       ingestRes.data.content = finalFullContent
       ingestRes.data.fullContent = finalFullContent
@@ -479,6 +480,9 @@ const generateTreeText = (nodes: TreeNode[], prefix = ''): string => {
   return text
 }
 
+// ==========================================
+// 勾选合并 (XML 格式组装)
+// ==========================================
 const handleAssembleSelected = () => {
   if (!resultData.value || !dirTreeRef.value) return
 
@@ -490,15 +494,17 @@ const handleAssembleSelected = () => {
     return
   }
 
-  const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
-    + generateTreeText(resultData.value.directoryTree)
+  // 【修改点：组装选中的文件大纲与内容】
+  const summaryXml = `<project_summary>\nProject: ${resultData.value.projectName}\nExport Type: Selected Files (${selectedFiles.length} files)\n</project_summary>\n\n`
+  const treeXml = `<directory_tree>\n.\n${generateTreeText(resultData.value.directoryTree)}</directory_tree>\n`
 
-  let contentText = "\n\n================================================\nSelected Files Content:\n================================================\n\n"
+  let contentText = "\n<files>\n"
   selectedFiles.forEach(file => {
-    contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
+    contentText += `<file path="${file.fullPath || file.label}">\n${file.content || ''}\n</file>\n\n`
   })
+  contentText += "</files>"
 
-  const finalString = treeText + contentText
+  const finalString = summaryXml + treeXml + contentText
 
   resultData.value = markRaw({
     ...resultData.value,
@@ -523,6 +529,9 @@ const findNodeIdByPath = (nodes: TreeNode[], targetPath: string): number | null 
   return null
 }
 
+// ==========================================
+// Facade 点击 (XML 格式组装)
+// ==========================================
 const handleFacadeTreeClick = (data: any) => {
   const node = data as TreeNode;
   if (!resultData.value || !node.path || !dirTreeRef.value) return
@@ -560,18 +569,17 @@ const handleFacadeTreeClick = (data: any) => {
 const resetView = () => {
   if (resultData.value && resultData.value.fullContent) {
 
-    // 【修改点：恢复查看时，判断是否触碰熔断保护】
     let displayContent = resultData.value.fullContent
     if (resultData.value.fullEstimatedTokens! > 500000) {
-      const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n" + generateTreeText(resultData.value.directoryTree)
-      displayContent = `${treeText}\n\n================================================\n` +
+      const summaryXml = `<project_summary>\nProject: ${resultData.value.projectName}\nTotal Files: ${resultData.value.fullFileCount}\nEstimated Tokens: ${resultData.value.fullEstimatedTokens}\n</project_summary>\n\n`
+      const treeXml = `<directory_tree>\n.\n${generateTreeText(resultData.value.directoryTree)}</directory_tree>\n`
+      displayContent = `${summaryXml}${treeXml}\n` +
         `【⚠️ 系统保护机制：当前仓库极其庞大 (${resultData.value.fullEstimatedTokens} Tokens)】\n` +
         `为防止浏览器内存崩溃，已自动关闭全库代码的合并预览。\n\n` +
         `👉 您的操作指南：\n` +
         `1. 请在左侧【目录结构】中，精准勾选您本次需要分析的核心业务文件。\n` +
         `2. 勾选完成后，点击右上角的【组装勾选】按钮。\n` +
-        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n` +
-        `================================================`
+        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n`
     }
 
     resultData.value = markRaw({
@@ -596,26 +604,20 @@ const handleDownload = () => {
   const checkedNodes = dirTreeRef.value ? (dirTreeRef.value.getCheckedNodes() as TreeNode[]).filter(n => n.isFile) : []
 
   if (checkedNodes.length > 0) {
-    const treeText = "================================================\nDirectory Structure (Tree):\n================================================\n.\n"
-      + generateTreeText(resultData.value.directoryTree)
+    const summaryXml = `<project_summary>\nProject: ${resultData.value.projectName}\nExport Type: Selected Files (${checkedNodes.length} files)\n</project_summary>\n\n`
+    const treeXml = `<directory_tree>\n.\n${generateTreeText(resultData.value.directoryTree)}</directory_tree>\n`
 
-    let contentText = "\n\n================================================\nSelected Files Content:\n================================================\n\n"
+    let contentText = "\n<files>\n"
     checkedNodes.forEach(file => {
-      // 因为现在取消了读取限制，单个节点里的 file.content 一定是完整的！
-      contentText += `================================================\nFile: ${file.fullPath || file.label}\n================================================\n${file.content || ''}\n\n`
+      contentText += `<file path="${file.fullPath || file.label}">\n${file.content || ''}\n</file>\n\n`
     })
+    contentText += "</files>"
 
-    downloadContent = `Project: ${resultData.value.projectName}\n` +
-      `Export Type: Selected Files (${checkedNodes.length} files)\n\n` +
-      treeText + contentText
+    downloadContent = summaryXml + treeXml + contentText
 
     ElMessage.success(`正在下载选中的 ${checkedNodes.length} 个核心文件...`)
   } else {
-    // 因为 fullContent 保存的是真正的全库代码，所以直接下载没问题！
-    downloadContent = `Project: ${resultData.value.projectName}\n` +
-      `Export Type: Full Repository (${resultData.value.fullFileCount} files)\n\n` +
-      resultData.value.fullContent
-
+    downloadContent = resultData.value.fullContent || ''
     ElMessage.success('正在下载全库完整代码...')
   }
 
