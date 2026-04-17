@@ -1,94 +1,141 @@
-init
-这是一份基于您提供的代码为您编写的详细 `README.md` 文档。
-
-***
-
 # Gingest 代码提取器
 
-[cite_start]Gingest 是一个专为将完整代码库提取并转化为 AI（大模型）友好格式而设计的内部工具 [cite: 125, 126][cite_start]。它可以将 GitLab 仓库或本地目录中的代码结构和文件内容，一键打包为清晰的带有目录树和 XML 风格标签的纯文本上下文 [cite: 43]，完美解决 AI 代码审查、架构分析或业务逻辑梳理时手动复制粘贴的痛点。
+Gingest 是一个专为将完整代码库提取并转化为 AI（大模型）友好格式而设计的内部工具 。它可以将 GitLab 仓库或本地目录中的代码结构和文件内容，一键打包为清晰的带有目录树和 XML 风格标签的纯文本上下文 ，完美解决 AI 代码审查、架构分析或业务逻辑梳理时手动复制粘贴的痛点。
 
 ## ✨ 核心特性
 
-* **双重提取引擎**：
-    * [cite_start]**GitLab 模式**：通过 GitLab API 直接检索有权限的项目和分支 [cite: 143, 144][cite_start]，并在后端内存中极速解析 ZIP 流，不落盘直接提取源码 [cite: 162, 166]。
-    * [cite_start]**本地模式**：采用现代化的双引擎机制（现代 `showDirectoryPicker` API 与传统 `<input>` 后备方案）直读本地文件 [cite: 19, 26][cite_start]，或通过后端 NIO 高效遍历磁盘 [cite: 243]。
-* [cite_start]**AI 友好格式组装**：自动将代码打包为结构化文本，包含 `<project_summary>`（项目摘要）、`<directory_tree>`（目录拓扑）以及包含具体代码的 `<files>` 节点 [cite: 43, 51]。
-* [cite_start]**Java Facade / Controller 接口透视**：通过正则引擎自动扫描 `.java` 文件中的接口方法及 `@Operation` 注解 [cite: 216, 223][cite_start]，在前端单独生成接口树，点击后可一键在目录树中联动定位并高亮核心业务文件 [cite: 53, 54]。
-* **强大的安全防卡死机制**：
-    * [cite_start]**大文本截断**：前端采用 10 万字符预览限制，防止超长代码卡死浏览器渲染进程 [cite: 6]。
-    * [cite_start]**全库熔断保护**：当代码预估超过 50 万 Tokens 时，自动关闭全量合并预览，引导用户按需勾选或直接下载完整文件 [cite: 44, 57]。
-    * [cite_start]**本地规模限制**：严格控制单次本地提取不超过 3000 个文件或 50MB 体积，保障系统内存安全 [cite: 14, 238]。
-* **极致性能**：
-    * [cite_start]后端默认开启 Spring Boot 虚拟线程（Virtual Threads） [cite: 282]。
-    * [cite_start]开启针对大文本输出的 GZIP 全局响应压缩 [cite: 282]。
-    * [cite_start]前端树形组件与接口搜索全面接入 300ms 防抖 [cite: 8, 9]。
+- **双重提取引擎**：
+    - **GitLab 模式**：通过 GitLab API 直接检索有权限的项目和分支 ，并在后端内存中极速解析 ZIP 流，不落盘直接提取源码 。
+
+    - **本地模式**：采用现代化的双引擎机制（现代 showDirectoryPicker API 与传统 &lt;input&gt; 后备方案）直读本地文件 ，或通过后端 NIO 高效遍历磁盘 。
+
+- **AI 友好格式组装**：自动将代码打包为结构化文本，包含 &lt;project_summary&gt;（项目摘要）、&lt;directory_tree&gt;（目录拓扑）以及包含具体代码的 &lt;files&gt; 节点 。
+
+- **Java Facade / Controller 接口透视**：通过正则引擎自动扫描 .java 文件中的接口方法及 @Operation 注解 ，在前端单独生成接口树，点击后可一键在目录树中联动定位并高亮核心业务文件 。
+
+- **强大的安全防卡死机制**：
+    - **大文本截断**：前端采用 10 万字符预览限制，防止超长代码卡死浏览器渲染进程 。
+
+    - **全库熔断保护**：当代码预估超过 50 万 Tokens 时，自动关闭全量合并预览，引导用户按需勾选或直接下载完整文件 。
+
+    - **本地规模限制**：严格控制单次本地提取不超过 3000 个文件或 50MB 体积，保障系统内存安全 。
+
+- **极致性能**：
+    - 后端默认开启 Spring Boot 虚拟线程（Virtual Threads）以提升并发性能 。
+
+    - 开启针对大文本输出的 GZIP 全局响应压缩 。
+
+    - 前端目录树与接口搜索全面接入 300ms 防抖 。
+
+
+## 🧮 Token 是如何计算的？
+
+在使用大语言模型（LLM）时，上下文窗口通常以 Token 为单位。为了帮助用户在提取代码时直观掌握大模型是否能够“吃下”这些代码，Gingest 内置了 Token 预估机制。
+
+- **计算公式**：预估 Tokens = 总文本字符数 / 4 。
+
+- **原理解释**：这是一个在 AI 工程界广泛使用的快速启发式估算方法。对于包含中英文字符、标点以及代码符号的混合代码文本，平均大约每 4 个字符会由于 BPE（Byte-Pair Encoding）分词算法被切分成 1 个 Token 。
+
+- **性能考量**：在动辄几十兆的超大代码库面前，如果在前后端引入完整的深度分词器（如 tiktoken）会极大拖慢处理速度并消耗过高内存。采用 totalTextLength / 4 能够在保持较高准确率的同时，实现毫秒级的瞬间无感计算 。
+
 
 ## 🛠️ 技术栈
 
-### 前端 (`gingest-ui`)
-* [cite_start]**核心框架**：Vue 3 + Vite [cite: 3, 111]
-* [cite_start]**开发语言**：TypeScript [cite: 111]
-* [cite_start]**UI 组件库**：Element Plus [cite: 3]
-* [cite_start]**工程化规范**：ESLint + Prettier + Oxlint [cite: 111]
+### 前端 (gingest-ui)
+
+- **核心框架**：Vue 3 + Vite
+
+- **开发语言**：TypeScript
+
+- **UI 组件库**：Element Plus
+
+- **工程化规范**：ESLint + Prettier + Oxlint
+
 
 ### 后端
-* [cite_start]**核心框架**：Spring Boot 3 [cite: 280]
-* **开发语言**：Java
-* [cite_start]**第三方集成**：GitLab4J-API [cite: 120]
-* [cite_start]**API 文档**：Swagger (OpenAPI 3) [cite: 125]
+
+- **核心框架**：Spring Boot 3
+
+- **开发语言**：Java (JDK 21+)
+- **第三方集成**：GitLab4J-API
+
+- **API 文档**：Swagger (OpenAPI 3)
+
 
 ## 🚀 快速开始
 
-### 1. 后端服务启动
+### 1\. 后端服务启动
 
-[cite_start]后端项目为标准的 Spring Boot 工程，默认运行在 `31020` 端口 [cite: 282]。
+后端项目为标准的 Spring Boot 工程，默认运行在 31020 端口 。
 
-**修改配置**：
-[cite_start]在 `src/main/resources/application.yml` 中配置您的 GitLab 实例地址与个人访问令牌（PAT）[cite: 121, 282]：
+**修改配置**： 在 src/main/resources/application.yml 中配置您的 GitLab 实例地址与个人访问令牌（PAT） ：
+
 ```yaml
-gitlab:
-  url: "http://您的-gitlab-地址/"
-  token: "您的-glpat-token"
+gitlab:  
+url: "http://您的-gitlab-地址/"  
+token: "您的-glpat-token"
 ```
 
-**启动服务**：
-[cite_start]运行 `GingestApplication.java` 的 `main` 方法 [cite: 280]。
-[cite_start]启动成功后，可在浏览器访问接口文档测试功能：`http://127.0.0.1:31020/doc.html` [cite: 281]。
+**启动服务**： 运行 GingestApplication.java 的 main 方法 。 启动成功后，可在浏览器访问接口文档测试功能：http://127.0.0.1:31020/doc.html 。
 
-### 2. 前端服务启动
+### 2\. 前端服务启动
 
-[cite_start]前端项目位于 `gingest-ui` 目录下 [cite: 1][cite_start]。Vite 代理已自动配置，开发环境会把 `/api` 流量转发至 `http://localhost:31020` [cite: 110]。
+前端项目位于 gingest-ui 目录下。Vite 代理已自动配置，开发环境会把 /api 流量转发至 http://localhost:31020 。
 
-```bash
-# 进入前端目录
-cd gingest-ui
+```Bash
 
-# 安装依赖包
-npm install
-
-# 启动开发服务器
+\# 进入前端目录  
+cd gingest-ui  
+<br/>\# 安装依赖包  
+npm install  
+<br/>\# 启动开发服务器  
 npm run dev
 ```
 
-启动完成后，打开终端提示的 `localhost` 地址即可开始使用。
+启动完成后，打开终端提示的 localhost 地址即可开始使用。
 
 ## 📖 使用指南
 
-1.  [cite_start]**选择数据源**：在顶部控制栏切换【GitLab】或【本地磁盘】模式 [cite: 63]。
+1.  **选择数据源**：在顶部控制栏切换【GitLab】或【本地磁盘】模式 。
+
 2.  **获取代码**：
-    * [cite_start]如果是 GitLab，可模糊搜索项目名，下拉选择对应的分支，点击【开始提取】[cite: 64, 66]。
-    * [cite_start]如果是本地磁盘，直接点击【开始提取】，并在弹出的浏览器授权窗口中选择您的源码文件夹（建议直接选择 `src` 等有效代码目录，避开根目录）[cite: 26, 66]。
+    - 如果是 GitLab，可模糊搜索项目名，下拉选择对应的分支，点击【开始提取】 。
+
+    - 如果是本地磁盘，直接点击【开始提取】，并在弹出的浏览器授权窗口中选择您的源码文件夹（建议直接选择 src 等有效代码目录，避开根目录） 。
+
 3.  **精细化操作**：
-    * [cite_start]**左侧看板**：查看项目的基础文件数、Tokens 预估量与整体大小 [cite: 68, 69, 70, 71]。
-    * [cite_start]**中间代码树**：浏览完整的目录结构。您可以勾选想要深入分析的具体文件，点击右上角的【组装勾选】，剔除无效代码 [cite: 50, 72]。
-    * [cite_start]**右侧接口树**：专门针对 Java 后端的 Facade 层，可以搜索业务接口方法。点击具体的方法，会自动在中间的目录树中定位到其对应的物理文件并高亮 [cite: 53, 54, 79]。
+    - **左侧看板**：查看项目的基础文件数、Tokens 预估量与整体大小 。
+
+    - **中间代码树**：浏览完整的目录结构。您可以勾选想要深入分析的具体文件，点击右上角的【组装勾选】，剔除无效代码 。
+
+    - **右侧接口树**：专门针对 Java 后端的 Facade 层，可以搜索业务接口方法。点击具体的方法，会自动在中间的目录树中定位到其对应的物理文件并高亮 。
+
 4.  **复制/下载投喂给大模型**：
-    * [cite_start]使用【复制当前视图代码】一键将规整好的代码送入剪贴板 [cite: 84]。
-    * [cite_start]如遇超大型项目，建议点击【下载完整 TXT】，将生成的 `.txt` 文本作为附件上传给具有文件分析能力的 AI 助手 [cite: 85, 86]。
+    - 使用【复制当前视图代码】一键将规整好的代码送入剪贴板 。
+
+    - 如遇超大型项目，建议点击【下载完整 TXT】，将生成的 .txt 文本作为附件上传给具有长文本分析能力的 AI 助手 。
+
 
 ## ⚠️ 注意事项与过滤规则
 
-为了保证生成的 AI 上下文高度纯净并防止性能崩塌，系统在前后端均内置了强制过滤黑名单：
-* [cite_start]**拦截无用目录**：`node_modules`, `.git`, `target`, `.idea`, `build` 等 [cite: 13, 155, 236]。
-* [cite_start]**拦截二进制与非代码文件**：包括但不限于 `.jar`, `.exe`, `.png`, `.pdf`, `.mp4` 以及常规构建产物 `.min.js`, `.map` 等 [cite: 13, 153, 234]。
-* [cite_start]**拦截重型锁文件**：`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` [cite: 13, 156]。
+为了保证生成的 AI 上下文高度纯净并防止性能崩塌，系统在前后端均内置了强制过滤黑名单，所有规则支持在 application.yml 中动态配置 ：
+
+- **拦截无用目录**：如 node_modules, .git, target, .idea, build, dist 等 。
+
+- **拦截二进制与非代码文件**：包括但不限于 .jar, .exe, .png, .pdf, .mp4 以及常规构建产物 .min.js, .map 等 。
+
+- **拦截重型锁文件**：如 package-lock.json, yarn.lock, pnpm-lock.yaml 。
+
+
+## 🌟 未来展望
+
+Gingest 的定位不仅限于一个“代码搬运工”，未来的迭代方向将围绕**智能化**与**深层语义理解**展开：
+
+1.  **多语言 AST 深度解析（Abstract Syntax Tree）**： 当前版本对 Java Facade 的接口提取依赖于正则匹配 。未来计划引入轻量级的 AST 解析引擎，并支持提取 Go、Python、TypeScript 等更多语言的类、函数声明、入参出参与核心注释，生成更精准的“代码骨架（Skeleton）”。
+
+2.  **大模型直连与对话能力 (LLM Integration)**：  
+    摆脱“手动复制下载”的中间流程，允许用户直接在 UI 界面配置 OpenAI、Gemini 3.1 Pro 或本地私有化大模型（如基于 Ollama 部署的模型）的 API Key。实现“提取即对话”，在侧边栏直接向 AI 询问代码库的设计逻辑或请求生成单测。
+3.  **CLI 命令行工具与 IDE 插件化**：  
+    将核心代码提取逻辑抽离，封装为跨平台的命令行工具（CLI）和 VS Code / Trae 等 IDE 插件，使开发者能够在使用顺手的开发环境中通过快捷键快速完成选中代码块的上下文组装。
+4.  **智能分块与向量检索 (RAG 架构演进)**：  
+    针对突破大模型上下文极限（例如超过 2M Tokens）的超巨型单体架构仓库，引入本地化向量数据库（Vector DB）。系统会在后台将提取的代码进行语义级 Chunking（分块）并进行 Embedding，让用户能够通过自然语言先检索出最相关的几个类，再进行精准组装。
