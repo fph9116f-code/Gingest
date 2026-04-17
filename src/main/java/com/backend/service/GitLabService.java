@@ -26,19 +26,7 @@ import java.util.zip.ZipInputStream;
 public class GitLabService {
 
     private final GitLabApi gitLabApi;
-
-    // 常见需要过滤的二进制文件或无意义文件的后缀/目录
-    private static final Set<String> IGNORE_EXTENSIONS = Set.of(
-            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz",
-            ".jar", ".class", ".exe", ".xml", ".node", ".dll", ".so", ".dylib",
-            ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".svg", ".properties",
-            ".cmd", ".gitignore", ".config", ".iml",
-            ".map", ".sql", ".bak", ".log", ".out", ".min.js", ".min.css" // 👈 新增
-    );
-    private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules", ".git", "target", ".idea", "build");
-    private static final Set<String> IGNORE_FILE_NAMES = Set.of(
-            "package-lock.json", "yarn.lock", "pnpm-lock.yaml"
-    );
+    private final FilterConfigService filterConfigService;
 
     /**
      * 拉取代码并生成包含动态树形结构的响应
@@ -178,27 +166,19 @@ public class GitLabService {
 
     private boolean isTextFile(String fileName) {
         String lowerCaseName = fileName.toLowerCase();
-
         String[] pathParts = lowerCaseName.split("/");
         for (String part : pathParts) {
-            if (part.startsWith(".") || IGNORE_DIRECTORIES.contains(part)) {
+            if (part.startsWith(".") || filterConfigService.getIgnoreDirectories().contains(part)) {
                 return false;
             }
         }
-
-        for (String ext : IGNORE_EXTENSIONS) {
+        for (String ext : filterConfigService.getIgnoreExtensions()) {
             if (lowerCaseName.endsWith(ext)) {
                 return false;
             }
         }
-
-        // 【新增】：精准拦截 package-lock.json 等特定文件
         String pureFileName = pathParts[pathParts.length - 1];
-        if (IGNORE_FILE_NAMES.contains(pureFileName)) {
-            return false;
-        }
-
-        return true;
+        return !filterConfigService.getIgnoreFileNames().contains(pureFileName);
     }
 
     public List<String> getBranches(String input) {

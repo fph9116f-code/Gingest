@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, markRaw, nextTick } from 'vue'
+import { ref, watch, computed, markRaw, nextTick, onMounted } from 'vue'
 import { Document, Download, Connection, Refresh, CircleCheck, Folder } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElTree } from 'element-plus'
@@ -178,17 +178,12 @@ const handleFetchBranches = async () => {
 }
 
 // ==========================================
-// 【黑科技核心】：双引擎本地文件读取系统 (纯净 TS 版)
+// 【动态配置化】：从后端统一拉取黑名单
 // ==========================================
-const IGNORE_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz',
-  '.jar', '.class', '.exe', '.xml', '.node', '.dll', '.so', '.dylib',
-  '.woff', '.woff2', '.ttf', '.eot', '.mp4', '.mp3', '.svg', '.properties',
-  '.cmd', '.gitignore', '.config', '.iml',
-  '.map', '.sql', '.bak', '.log', '.out', '.min.js', '.min.css'
-])
-const IGNORE_DIRECTORIES = new Set(['node_modules', '.git', 'target', '.idea', 'build', 'dist'])
-const IGNORE_FILE_NAMES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'])
+const IGNORE_EXTENSIONS = ref<Set<string>>(new Set())
+const IGNORE_DIRECTORIES = ref<Set<string>>(new Set())
+const IGNORE_FILE_NAMES = ref<Set<string>>(new Set())
+
 const MAX_FILE_COUNT = 3000
 const MAX_TOTAL_SIZE = 50 * 1024 * 1024 // 50MB 内存保护阈值
 
@@ -258,13 +253,13 @@ const processLocalDirectoryModern = async (): Promise<GingestResponse> => {
   const traverse = async (handle: any, currentPath: string) => {
     for await (const entry of handle.values()) {
       if (entry.kind === 'directory') {
-        if (entry.name.startsWith('.') || IGNORE_DIRECTORIES.has(entry.name.toLowerCase())) continue
+        if (entry.name.startsWith('.') || IGNORE_DIRECTORIES.value.has(entry.name.toLowerCase())) continue
         await traverse(entry, currentPath + entry.name + '/')
       } else if (entry.kind === 'file') {
         const fileName = entry.name; const lowerName = fileName.toLowerCase()
-        if (IGNORE_FILE_NAMES.has(lowerName)) continue
+        if (IGNORE_FILE_NAMES.value.has(lowerName)) continue
         let isIgnoredExt = false
-        for (const ext of IGNORE_EXTENSIONS) { if (lowerName.endsWith(ext)) { isIgnoredExt = true; break } }
+        for (const ext of IGNORE_EXTENSIONS.value) { if (lowerName.endsWith(ext)) { isIgnoredExt = true; break } }
         if (isIgnoredExt) continue
 
         if (fileCount >= MAX_FILE_COUNT) throw new Error(`【安全熔断】该目录过大！代码文件已超过 ${MAX_FILE_COUNT} 个。`)
@@ -324,16 +319,16 @@ const processLocalDirectoryLegacy = (): Promise<GingestResponse> => {
 
           let isIgnoredDir = false
           for (const part of pathParts.slice(0, -1)) {
-            if (part.startsWith('.') || IGNORE_DIRECTORIES.has(part.toLowerCase())) {
+            if (part.startsWith('.') || IGNORE_DIRECTORIES.value.has(part.toLowerCase())) {
               isIgnoredDir = true; break
             }
           }
           if (isIgnoredDir) continue
 
           const fileName = file.name; const lowerName = fileName.toLowerCase()
-          if (IGNORE_FILE_NAMES.has(lowerName)) continue
+          if (IGNORE_FILE_NAMES.value.has(lowerName)) continue
           let isIgnoredExt = false
-          for (const ext of IGNORE_EXTENSIONS) { if (lowerName.endsWith(ext)) { isIgnoredExt = true; break } }
+          for (const ext of IGNORE_EXTENSIONS.value) { if (lowerName.endsWith(ext)) { isIgnoredExt = true; break } }
           if (isIgnoredExt) continue
 
           if (fileCount >= MAX_FILE_COUNT) throw new Error(`【安全熔断】该目录过大！代码文件已超过 ${MAX_FILE_COUNT} 个。`)
@@ -683,6 +678,17 @@ const handleCopy = async () => {
     ElMessage.error('复制失败')
   }
 }
+
+onMounted(async () => {
+  try {
+    const res = await axios.get<{extensions: string[], directories: string[], fileNames: string[]}>('/api/ingest/config/filters')
+    IGNORE_EXTENSIONS.value = new Set(res.data.extensions)
+    IGNORE_DIRECTORIES.value = new Set(res.data.directories)
+    IGNORE_FILE_NAMES.value = new Set(res.data.fileNames)
+  } catch (error) {
+    console.error('获取统一过滤配置失败，请检查网络或后端服务', error)
+  }
+})
 </script>
 
 <template>

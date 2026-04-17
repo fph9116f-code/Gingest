@@ -2,6 +2,7 @@ package com.backend.controller;
 
 import com.backend.dto.FacadeInfo;
 import com.backend.dto.GingestResponse;
+import com.backend.service.FilterConfigService;
 import com.backend.service.GitLabService;
 import com.backend.service.LocalFileService;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/ingest")
@@ -24,6 +27,7 @@ public class GingestController {
 
     private final GitLabService gitLabService;
     private final LocalFileService localFileService;
+    private final FilterConfigService filterConfigService;
 
     @GetMapping("")
     public GingestResponse ingest(@RequestParam String projectId, @RequestParam(required = false) String branch) {
@@ -119,5 +123,10 @@ public class GingestController {
     @GetMapping("/facades")
     public List<FacadeInfo> getFacades(@RequestParam String projectId, @RequestParam(required = false) String branch) {
         return gitLabService.extractFacadeMethods(projectId, branch);
+    }
+
+    @GetMapping("/config/filters")
+    public Map<String, Set<String>> getFilters() {
+        return filterConfigService.getAllFilters();
     }
 }

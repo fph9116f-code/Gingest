@@ -2,6 +2,7 @@ package com.backend.service;
 
 import com.backend.dto.GingestResponse;
 import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -13,17 +14,10 @@ import java.util.*;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class LocalFileService {
+    private final FilterConfigService filterConfigService;
 
-    // 常见需要过滤的垃圾目录和二进制文件
-    private static final Set<String> IGNORE_EXTENSIONS = Set.of(
-            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz",
-            ".jar", ".class", ".exe", ".xml", ".node", ".dll", ".so", ".dylib",
-            ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".svg", ".properties",
-            ".cmd", ".gitignore", ".config", ".iml",
-            ".map", ".sql", ".bak", ".log", ".out", ".min.js", ".min.css"
-    );
-    private static final Set<String> IGNORE_DIRECTORIES = Set.of("node_modules", ".git", "target", ".idea", "build");
 
     // 【新增】：安全熔断阈值，防止扫描超大目录撑爆内存
     private static final int MAX_FILE_COUNT = 3000; // 最多允许扫描 3000 个有效代码文件
@@ -51,9 +45,10 @@ public class LocalFileService {
             Files.walkFileTree(rootPath, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+
                     String dirName = dir.getFileName().toString();
                     // 遇到隐藏目录 (如 .vscode) 或者黑名单目录，直接跳过整棵树，极大幅度提升性能！
-                    if (dirName.startsWith(".") || IGNORE_DIRECTORIES.contains(dirName.toLowerCase())) {
+                    if (dirName.startsWith(".") || filterConfigService.getIgnoreDirectories().contains(dirName.toLowerCase())) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
                     return FileVisitResult.CONTINUE;
@@ -120,7 +115,7 @@ public class LocalFileService {
 
     private boolean isTextFile(String fileName) {
         String lowerCaseName = fileName.toLowerCase();
-        for (String ext : IGNORE_EXTENSIONS) {
+        for (String ext : filterConfigService.getIgnoreExtensions()) {
             if (lowerCaseName.endsWith(ext)) {
                 return false;
             }
