@@ -83,8 +83,23 @@ const treeProps = {
   label: 'label',
 }
 
-watch(filterDirText, (val) => { dirTreeRef.value?.filter(val) })
-watch(filterText, (val) => { treeRef.value?.filter(val) })
+// 【修复】：为目录树搜索加入 300ms 防抖，彻底告别卡顿
+let dirSearchTimeout: ReturnType<typeof setTimeout> | null = null
+watch(filterDirText, (val) => {
+  if (dirSearchTimeout) clearTimeout(dirSearchTimeout)
+  dirSearchTimeout = setTimeout(() => {
+    dirTreeRef.value?.filter(val)
+  }, 300)
+})
+
+// 【修复】：为 Facade 接口树搜索加入 300ms 防抖
+let facadeSearchTimeout: ReturnType<typeof setTimeout> | null = null
+watch(filterText, (val) => {
+  if (facadeSearchTimeout) clearTimeout(facadeSearchTimeout)
+  facadeSearchTimeout = setTimeout(() => {
+    treeRef.value?.filter(val)
+  }, 300)
+})
 
 const filterNode = (value: string, data: any) => {
   if (!value) return true
@@ -231,6 +246,11 @@ const buildLocalTree = (paths: string[], contentMap: Record<string, string>): Tr
 const processLocalDirectoryModern = async (): Promise<GingestResponse> => {
   const dirHandle = await (window as any).showDirectoryPicker()
   localPathInput.value = dirHandle.name
+
+  // 【核心修复 1】：用户在系统弹窗点击"允许"后，立即开启加载状态
+  loading.value = true
+  // 【核心修复 2】：利用 Promise 强行休眠 50 毫秒，把主线程让给浏览器的渲染引擎，确保 Loading 动画成功画在屏幕上！
+  await new Promise(resolve => setTimeout(resolve, 50))
 
   let fileCount = 0; let totalTextLength = 0; let byteSize = 0;
   const processedFiles: string[] = []; const fileContents: Record<string, string> = {}
