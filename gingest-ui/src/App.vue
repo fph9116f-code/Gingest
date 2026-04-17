@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, markRaw } from 'vue'
+import { ref, watch, computed, markRaw, nextTick } from 'vue'
 import { Document, Download, Connection, Refresh, CircleCheck, Folder } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElTree } from 'element-plus'
@@ -403,7 +403,6 @@ const handleIngest = async () => {
     }
     assignIds(ingestRes.data.directoryTree)
 
-    // 【修改点：组装大模型专用的 XML 元数据与目录树】
     const summaryXml = `<project_summary>\nProject: ${ingestRes.data.projectName}\nTotal Files: ${ingestRes.data.fileCount}\nEstimated Tokens: ${ingestRes.data.estimatedTokens}\n</project_summary>\n\n`
     const treeXml = `<directory_tree>\n.\n${generateTreeText(ingestRes.data.directoryTree)}</directory_tree>\n`
     const fullTreeText = summaryXml + treeXml
@@ -412,7 +411,6 @@ const handleIngest = async () => {
     const gatherAll = (nodes: TreeNode[]) => {
       nodes.forEach(n => {
         if (n.isFile) {
-          // 【修改点：采用 XML 标签包裹代码文件】
           contentArray.push(`<file path="${n.fullPath || n.label}">\n${n.content || ''}\n</file>\n\n`)
         } else if (n.children) {
           gatherAll(n.children)
@@ -421,7 +419,6 @@ const handleIngest = async () => {
     }
     gatherAll(ingestRes.data.directoryTree)
 
-    // 【修改点：增加 <files> 根节点】
     const finalFullContent = fullTreeText + "\n<files>\n" + contentArray.join('') + "</files>"
 
     if (ingestRes.data.estimatedTokens > 500000) {
@@ -494,7 +491,6 @@ const handleAssembleSelected = () => {
     return
   }
 
-  // 【修改点：组装选中的文件大纲与内容】
   const summaryXml = `<project_summary>\nProject: ${resultData.value.projectName}\nExport Type: Selected Files (${selectedFiles.length} files)\n</project_summary>\n\n`
   const treeXml = `<directory_tree>\n.\n${generateTreeText(resultData.value.directoryTree)}</directory_tree>\n`
 
@@ -530,7 +526,7 @@ const findNodeIdByPath = (nodes: TreeNode[], targetPath: string): number | null 
 }
 
 // ==========================================
-// Facade 点击 (XML 格式组装)
+// Facade 点击联动 (不渲染代码，仅打钩并定位)
 // ==========================================
 const handleFacadeTreeClick = (data: any) => {
   const node = data as TreeNode;
@@ -539,28 +535,38 @@ const handleFacadeTreeClick = (data: any) => {
   const targetId = findNodeIdByPath(resultData.value.directoryTree, node.path)
 
   if (targetId !== null) {
+    // 1. 在中间的目录树中打钩（保留已选的其他项）
     dirTreeRef.value.setChecked(targetId, true, false)
 
     const treeNode = dirTreeRef.value.getNode(targetId)
     if (treeNode) {
+      // 2. 逐级向上展开父文件夹
       let parent = treeNode.parent
       while (parent && parent.level > 0) {
         parent.expanded = true
         parent = parent.parent
       }
 
+      // 3. 高亮背景色
       dirTreeRef.value.setCurrentKey(targetId)
 
-      setTimeout(() => {
-        const el = document.querySelector('.el-tree-node.is-current')
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        }
-      }, 100)
+      // 4. 精准平滑滚动（加入 nextTick 避免找不到渲染中的 DOM）
+      nextTick(() => {
+        setTimeout(() => {
+          // 只在中间目录树内部搜索高亮元素，绝对不会误搜到右侧！
+          const treeContainer = (dirTreeRef.value as any).$el
+          if (treeContainer) {
+            const el = treeContainer.querySelector('.el-tree-node.is-current')
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }
+          }
+        }, 150) // 延迟确保 Element Plus 的折叠展开动画播放完毕
+      })
     }
 
     const displayName = node.parentClass ? node.parentClass : node.label
-    ElMessage.success(`已在目录树中自动定位并勾选: ${displayName}`)
+    ElMessage.success(`已定位并勾选: ${displayName} (请挑选完毕后点击"组装勾选")`)
   } else {
     ElMessage.warning('未在目录树中找到该文件 (可能已被过滤或未提取)')
   }
