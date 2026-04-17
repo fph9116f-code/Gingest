@@ -43,19 +43,17 @@ Gingest 是一个专为将完整代码库提取并转化为 AI（大模型）友
 
 ### 前端 (gingest-ui)
 
+- **开发环境**：node 22.22.2,npm 10.9.7
 - **核心框架**：Vue 3 + Vite
-
 - **开发语言**：TypeScript
-
 - **UI 组件库**：Element Plus
-
 - **工程化规范**：ESLint + Prettier + Oxlint
 
 
 ### 后端
 
+- **开发环境**：jdk 21
 - **核心框架**：Spring Boot 3
-
 - **开发语言**：Java (JDK 21+)
 - **第三方集成**：GitLab4J-API
 
