@@ -63,7 +63,7 @@ const previewContent = computed(() => {
       '\n\n\n================================================\n' +
       '【⚠️ 内容过长，已开启防卡死截断保护】\n' +
       ' 为保证浏览器流畅，此处仅展示前 10 万字符预览。\n' +
-      ' 您提取的完整代码已在后台就绪，请点击上方【复制】或【下载】获取全量内容！\n' +
+      ' 您提取的完整代码已在后台就绪，请点击上方【复制】或【下载完整 XML】获取全量内容！\n' +
       '================================================'
   }
   return resultData.value.content
@@ -443,7 +443,7 @@ const handleIngest = async () => {
         `👉 您的操作指南：\n` +
         `1. 请在左侧【目录结构】中，精准勾选您本次需要分析的核心业务文件。\n` +
         `2. 勾选完成后，点击右上角的【组装勾选】按钮。\n` +
-        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n`
+        `3. 您依然可以直接点击右上角【下载完整 XML】获取真正的全库代码！\n`
       ingestRes.data.content = warningText
       ingestRes.data.fullContent = finalFullContent
     } else {
@@ -600,7 +600,7 @@ const resetView = () => {
         `👉 您的操作指南：\n` +
         `1. 请在左侧【目录结构】中，精准勾选您本次需要分析的核心业务文件。\n` +
         `2. 勾选完成后，点击右上角的【组装勾选】按钮。\n` +
-        `3. 您依然可以直接点击右上角【下载完整 TXT】获取真正的全库代码！\n`
+        `3. 您依然可以直接点击右上角【下载完整 XML】获取真正的全库代码！\n`
     }
 
     resultData.value = markRaw({
@@ -642,6 +642,22 @@ const handleDownload = () => {
     ElMessage.success('正在下载全库完整代码...')
   }
 
+  // ========================================================
+  // 【新增】：在导出的文件最末尾，强制注入大模型精读指令
+  // 使用字符串拼接，防止被 IDE 或聊天工具的 HTML 格式化器吞掉注释符
+  // ========================================================
+  const strongPrompt = '\n\n<' + '!--\n' +
+    '================================================================\n' +
+    '【核心指令：请务必逐字解析，这不是系统日志！】\n\n' +
+    '我刚刚为你提供的是一份完整的企业级项目级代码上下文，采用了严谨的 XML 结构。\n\n' +
+    '1. 请先阅读 <project_summary> 和 <directory_tree>，在你的认知中建立起该项目的宏观架构和包依赖关系。\n' +
+    '2. 这是最重要的指令：请你将注意力 100% 集中在 <files> 节点内部！这里面包含了真实的核心业务逻辑，绝对不是无用的系统日志，请不要略过任何一行！\n' +
+    '3. 请结合上述代码结构，严格按照我接下来在对话框中提出的问题进行深入分析和解答。\n' +
+    '================================================================\n' +
+    '--' + '>';
+
+  downloadContent += strongPrompt
+
   const blob = new Blob([downloadContent], { type: 'text/plain;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -650,7 +666,8 @@ const handleDownload = () => {
   const baseName = fetchMode.value === 'gitlab' ? searchInput.value : (localPathInput.value || 'local_project')
   const safeProjectName = baseName.replace(/[\\/:*?"<>|]/g, '_')
 
-  link.download = `${safeProjectName}_gingest${checkedNodes.length > 0 ? '_selected' : '_full'}.txt`
+  // 【修改】：将后缀名强制改为 .xml
+  link.download = `${safeProjectName}_gingest${checkedNodes.length > 0 ? '_selected' : '_full'}.xml`
 
   document.body.appendChild(link)
   link.click()
@@ -663,7 +680,7 @@ const handleCopy = async () => {
 
   if (isContentTruncated.value) {
     ElMessage({
-      message: '内容过大！为确保浏览器稳定和数据完整性，暂不允许直接复制。请点击右侧【下载完整 TXT】获取全量内容。',
+      message: '内容过大！为确保浏览器稳定和数据完整性，暂不允许直接复制。请点击右侧【下载完整 XML】获取全量内容。',
       type: 'error',
       duration: 5000,
       showClose: true
@@ -813,14 +830,14 @@ onMounted(async () => {
                   复制当前视图代码
                 </el-button>
                 <el-button type="warning" :icon="Download" @click="handleDownload">
-                  下载完整 TXT
+                  下载完整 XML
                 </el-button>
               </div>
             </div>
 
             <el-alert
               v-if="isContentTruncated"
-              title="⚠️ 代码量过大！为防止浏览器卡死，下方仅展示预览。请放心点击上方【复制】或【下载】，获取的是 100% 完整代码。"
+              title="⚠️ 代码量过大！为防止浏览器卡死，下方仅展示预览。请放心点击上方【复制】或【下载完整 XML】，获取的是 100% 完整代码。"
               type="warning"
               show-icon
               :closable="false"
