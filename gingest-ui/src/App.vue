@@ -50,6 +50,9 @@ const searchInput = ref<string>('')
 const loading = ref<boolean>(false)
 const resultData = ref<GingestResponse | null>(null)
 
+// 【新增】：控制是否附加 AI 强指令的开关，默认开启
+const appendStrongPrompt = ref<boolean>(true)
+
 // UI 渲染的终极防线：无论内存里存了多大的数据，界面上的 textarea 最多只渲染 10 万个字符
 const MAX_DISPLAY_LENGTH = 100000
 const isContentTruncated = computed(() => {
@@ -643,19 +646,20 @@ const handleDownload = () => {
   }
 
   // ========================================================
-  // 【新增】：在导出的文件最末尾，强制注入大模型精读指令
-  // 使用字符串拼接，防止被 IDE 或聊天工具的 HTML 格式化器吞掉注释符
+  // 【条件注入】：根据开关状态决定是否附加强指令
   // ========================================================
-  const strongPrompt = '\n\n' +
-    '================================================================\n' +
-    '【核心指令：请务必逐字解析，这不是系统日志！】\n\n' +
-    '我刚刚为你提供的是一份完整的企业级项目级代码上下文，采用了严谨的 XML 结构。\n\n' +
-    '1. 请先阅读 <project_summary> 和 <directory_tree>，在你的认知中建立起该项目的宏观架构和包依赖关系。\n' +
-    '2. 这是最重要的指令：请你将注意力 100% 集中在 <files> 节点内部！这里面包含了真实的核心业务逻辑，绝对不是无用的系统日志，请不要略过任何一行！\n' +
-    '3. 请结合上述代码结构，严格按照我接下来在对话框中提出的问题进行深入分析和解答。\n' +
-    '================================================================\n';
-
-  downloadContent += strongPrompt
+  if (appendStrongPrompt.value) {
+    const strongPrompt = '\n\n<' + '!--\n' +
+      '================================================================\n' +
+      '【核心指令：请务必逐字解析，这不是系统日志！】\n\n' +
+      '我刚刚为你提供的是一份完整的企业级项目级代码上下文，采用了严谨的 XML 结构。\n\n' +
+      '1. 请先阅读 <project_summary> 和 <directory_tree>，在你的认知中建立起该项目的宏观架构和包依赖关系。\n' +
+      '2. 这是最重要的指令：请你将注意力 100% 集中在 <files> 节点内部！这里面包含了真实的核心业务逻辑，绝对不是无用的系统日志，请不要略过任何一行！\n' +
+      '3. 请结合上述代码结构，严格按照我接下来在对话框中提出的问题进行深入分析和解答。\n' +
+      '================================================================\n' +
+      '--' + '>';
+    downloadContent += strongPrompt
+  }
 
   const blob = new Blob([downloadContent], { type: 'text/plain;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -817,7 +821,16 @@ onMounted(async () => {
           <template v-if="resultData">
             <div class="action-bar">
               <span class="panel-title" style="color: #409EFF;">{{ currentViewTitle }}</span>
-              <div>
+
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <el-tooltip content="在导出的 XML 末尾自动加上强制大模型精读的 Prompt，防止 AI 略读代码" placement="top">
+                  <el-switch
+                    v-model="appendStrongPrompt"
+                    active-text="附加精读Prompt"
+                    style="margin-right: 5px;"
+                  />
+                </el-tooltip>
+
                 <el-button type="info" plain :icon="Refresh" @click="resetView" v-if="currentViewTitle !== '全部提取结果 (All Files)'">
                   恢复查看全库
                 </el-button>
