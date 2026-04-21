@@ -2,6 +2,7 @@
 import { ref, watch, computed, markRaw, nextTick, onMounted } from 'vue'
 import { Document, Download, Connection, Refresh, CircleCheck, Folder } from '@element-plus/icons-vue'
 import axios from 'axios'
+import ignore from 'ignore'
 import { ElMessage, ElTree } from 'element-plus'
 
 interface GingestResponse {
@@ -245,16 +246,37 @@ const processLocalDirectoryModern = async (): Promise<GingestResponse> => {
   const dirHandle = await (window as any).showDirectoryPicker()
   localPathInput.value = dirHandle.name
 
-  // 【核心修复 1】：用户在系统弹窗点击"允许"后，立即开启加载状态
   loading.value = true
-  // 【核心修复 2】：利用 Promise 强行休眠 50 毫秒，把主线程让给浏览器的渲染引擎，确保 Loading 动画成功画在屏幕上！
   await new Promise(resolve => setTimeout(resolve, 50))
 
   let fileCount = 0; let totalTextLength = 0; let byteSize = 0;
   const processedFiles: string[] = []; const fileContents: Record<string, string> = {}
 
+  // ========================================================
+  // 【新增黑科技】：在前端动态解析本地目录下的 .gitignore
+  // ========================================================
+  const ig = ignore()
+  try {
+    const gitignoreHandle = await dirHandle.getFileHandle('.gitignore')
+    const gitignoreFile = await gitignoreHandle.getFile()
+    const gitignoreContent = await gitignoreFile.text()
+    ig.add(gitignoreContent)
+    console.log('成功加载并应用本地 .gitignore 规则')
+  } catch (e) {
+    console.log('当前目录无 .gitignore 文件，将仅使用系统默认过滤')
+  }
+
   const traverse = async (handle: any, currentPath: string) => {
     for await (const entry of handle.values()) {
+      // 计算相对路径用于 ignore 判断（目录需要加 / 结尾）
+      const entryPath = currentPath + entry.name
+      const checkPath = entry.kind === 'directory' ? entryPath + '/' : entryPath
+
+      // 【核心】：原生 .gitignore 过滤拦截
+      if (ig.ignores(checkPath)) {
+        continue // 如果在 gitignore 里面，直接无情跳过
+      }
+
       if (entry.kind === 'directory') {
         if (entry.name.startsWith('.') || IGNORE_DIRECTORIES.value.has(entry.name.toLowerCase())) continue
         await traverse(entry, currentPath + entry.name + '/')
