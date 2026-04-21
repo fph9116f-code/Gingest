@@ -4,9 +4,11 @@ import com.backend.dto.GingestResponse;
 import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.jgit.ignore.IgnoreNode;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -18,13 +20,10 @@ import java.util.*;
 public class LocalFileService {
     private final FilterConfigService filterConfigService;
 
+    // 安全熔断阈值
+    private static final int MAX_FILE_COUNT = 3000;
+    private static final long MAX_TOTAL_SIZE = 50 * 1024 * 1024L;
 
-    // 【新增】：安全熔断阈值，防止扫描超大目录撑爆内存
-    private static final int MAX_FILE_COUNT = 3000; // 最多允许扫描 3000 个有效代码文件
-    private static final long MAX_TOTAL_SIZE = 50 * 1024 * 1024L; // 最多允许累计读取 50MB 文本
-    /**
-     * 扫描本地目录，提取代码并生成与 GitLab 一致的树形结构
-     */
     public GingestResponse ingestLocalDirectory(String localPath) {
         Path rootPath = Paths.get(localPath);
         if (!Files.exists(rootPath) || !Files.isDirectory(rootPath)) {
@@ -36,39 +35,68 @@ public class LocalFileService {
 
         List<String> processedFiles = new ArrayList<>();
         Map<String, String> fileContents = new HashMap<>();
-
-        // 数组用于在匿名内部类中累加统计信息：[0] 为字节大小，[1] 为总字符长度
         long[] sizeAndLength = new long[2];
 
+        // ========================================================
+        // 【新增黑科技】：动态解析当前目录的 .gitignore 规则
+        // ========================================================
+        IgnoreNode ignoreNode = new IgnoreNode();
+        Path gitignorePath = rootPath.resolve(".gitignore");
+        if (Files.exists(gitignorePath)) {
+            try (InputStream in = Files.newInputStream(gitignorePath)) {
+                ignoreNode.parse(in);
+                log.info("成功加载并解析本地 .gitignore 动态过滤规则");
+            } catch (Exception e) {
+                log.warn("解析 .gitignore 失败，将仅使用全局 YML 过滤规则", e);
+            }
+        }
+
         try {
-            // 使用 NIO 的 walkFileTree，性能远超普通递归或 Files.walk，因为它可以直接 SKIP_SUBTREE 砍掉无用分支
             Files.walkFileTree(rootPath, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-
                     String dirName = dir.getFileName().toString();
-                    // 遇到隐藏目录 (如 .vscode) 或者黑名单目录，直接跳过整棵树，极大幅度提升性能！
+
+                    // 1. 全局配置拦截 (如 .git, .idea)
                     if (dirName.startsWith(".") || filterConfigService.getIgnoreDirectories().contains(dirName.toLowerCase())) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
+
+                    // 2. 原生 .gitignore 拦截 (文件夹级别)
+                    if (!dir.equals(rootPath) && !ignoreNode.getRules().isEmpty()) {
+                        String relativePath = rootPath.relativize(dir).toString().replace("\\", "/");
+                        // 判定是否被忽略 (入参 true 表示这是一个目录)
+                        if (ignoreNode.isIgnored(relativePath, true) == IgnoreNode.MatchResult.IGNORED) {
+                            return FileVisitResult.SKIP_SUBTREE;
+                        }
+                    }
+
                     return FileVisitResult.CONTINUE;
                 }
 
                 @Override
                 public FileVisitResult visitFile(@NonNull Path file, BasicFileAttributes attrs) {
                     String fileName = file.getFileName().toString();
+
+                    // 1. 全局后缀和特定文件名拦截
                     if (isTextFile(fileName)) {
-                        // 【新增核心防线】：熔断拦截！
+                        String relativePath = rootPath.relativize(file).toString().replace("\\", "/");
+
+                        // 2. 原生 .gitignore 拦截 (文件级别)
+                        if (!ignoreNode.getRules().isEmpty() &&
+                                ignoreNode.isIgnored(relativePath, false) == IgnoreNode.MatchResult.IGNORED) {
+                            return FileVisitResult.CONTINUE; // 跳过此文件
+                        }
+
+                        // 【安全熔断检查】
                         if (processedFiles.size() >= MAX_FILE_COUNT) {
-                            throw new RuntimeException("【安全熔断】该目录过大！有效代码文件已超过 " + MAX_FILE_COUNT + " 个，为保护系统内存已强制拦截。请指定更精确的子目录！");
+                            throw new RuntimeException("【安全熔断】该目录过大！有效代码文件已超过 " + MAX_FILE_COUNT + " 个...");
                         }
                         if (sizeAndLength[0] >= MAX_TOTAL_SIZE) {
-                            throw new RuntimeException("【安全熔断】该目录过大！累计读取源码已超过 50MB，为保护系统内存已强制拦截。请指定更精确的子目录！");
+                            throw new RuntimeException("【安全熔断】该目录过大！累计读取源码已超过 50MB...");
                         }
-                        // 将 Windows 的反斜杠转换为统一的正斜杠，兼容前端的树形解析
-                        String relativePath = rootPath.relativize(file).toString().replace("\\", "/");
+
                         try {
-                            // 尝试以 UTF-8 读取
                             String content = Files.readString(file, StandardCharsets.UTF_8);
                             processedFiles.add(relativePath);
                             fileContents.put(relativePath, content);
@@ -76,11 +104,9 @@ public class LocalFileService {
                             sizeAndLength[0] += file.toFile().length();
                             sizeAndLength[1] += content.length();
                         } catch (java.nio.charset.MalformedInputException e) {
-                            // 【核心防线】：如果强读抛出乱码异常，说明它绝对是个二进制/非文本文件，直接静默跳过！
-                            log.debug("跳过非 UTF-8 文本/二进制文件: {}", file.getFileName());
+                            log.debug("跳过非 UTF-8 文本文件: {}", fileName);
                         } catch (Exception e) {
-                            // 其他真正的权限错误等，只打印一行简短警告，不打印长堆栈刷屏
-                            log.warn("无法读取本地文件: {} ({})", file.getFileName(), e.getMessage());
+                            log.warn("无法读取本地文件: {} ({})", fileName, e.getMessage());
                         }
                     }
                     return FileVisitResult.CONTINUE;
@@ -88,13 +114,11 @@ public class LocalFileService {
 
                 @Override
                 public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                    log.warn("由于权限等原因无法访问该文件/目录: {}", file);
                     return FileVisitResult.CONTINUE;
                 }
             });
         } catch (IOException e) {
-            log.error("扫描本地目录发生全局异常", e);
-            throw new RuntimeException("读取本地文件失败，请检查磁盘权限: " + e.getMessage());
+            throw new RuntimeException("读取本地文件失败: " + e.getMessage());
         }
 
         int fileCount = processedFiles.size();
@@ -109,7 +133,7 @@ public class LocalFileService {
                 .estimatedTokens(estimatedTokens)
                 .formattedSize(formattedSize)
                 .directoryTree(buildDirectoryTree(processedFiles, fileContents))
-                .content("") // 遵循上一步的前端极速组装优化，后端不传几十 MB 的重复字符串
+                .content("")
                 .build();
     }
 
